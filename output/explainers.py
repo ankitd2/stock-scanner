@@ -262,8 +262,13 @@ def glossary_html() -> str:
             f"</div>"
         )
     return (
-        f'<section class="glossary">'
+        f'<section id="glossary" class="sec glossary">'
+        f'<div class="sec-head">'
+        f'<span class="sec-num">/ 09</span>'
         f'<h2 class="sec-title">Glossary</h2>'
+        f'</div>'
+        f'<p class="sec-lede">A plain-English reference for every signal, '
+        f'indicator, and screen used above.</p>'
         f"<dl>{rows}</dl>"
         f"</section>"
     )

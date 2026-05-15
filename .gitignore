@@ -10,5 +10,6 @@ report.html
 .venv/
 venv/
 .playwright-mcp/
-live-report-full.png
+*.png
 page-snapshot.md
+.cache/

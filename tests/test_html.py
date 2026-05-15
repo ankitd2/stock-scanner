@@ -255,7 +255,8 @@ class TestBuildDailyReport:
 
     def test_dark_theme_background(self):
         html = self._build()
-        assert "#0d1117" in html
+        # Ink-black editorial palette
+        assert "#0a0b0d" in html or "#0d1117" in html
 
 
 # ── Weekly report tests ──────────────────────────────────────────────────────
@@ -374,8 +375,10 @@ class TestBuildWeeklyReport:
 
     def test_dark_theme_css(self):
         html = self._build()
-        assert "#0d1117" in html
-        assert "#e6edf3" in html or "#c9d1d9" in html or "e6edf3" in html
+        # Ink-black editorial palette
+        assert "#0a0b0d" in html or "#0d1117" in html
+        # Paper-cream text or any near-white
+        assert "#e8e2d4" in html or "#e6edf3" in html
 
     def test_handles_empty_themes(self):
         html = self._build(ranked_themes=[], emerging_clusters=[])
@@ -403,11 +406,12 @@ class TestBuildWeeklyReport:
 
     def test_no_external_dependencies(self):
         html = self._build()
-        # The only allowed external dependency is Plotly's CDN, which is
-        # needed for interactive charts. No other CDNs should sneak in.
+        # Allowed external dependencies:
+        #   - Plotly CDN (interactive charts)
+        #   - Google Fonts (Newsreader + JetBrains Mono + Inter Tight)
+        # No other CDNs should sneak in.
         assert "cdn.jsdelivr.net" not in html
         assert "unpkg.com" not in html
-        assert "googleapis.com/css" not in html
 
 
 # ── Explainers module tests ──────────────────────────────────────────────────

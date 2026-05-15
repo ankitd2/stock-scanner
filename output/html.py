@@ -25,31 +25,67 @@ from output.explainers import EXPLAINERS, explainer_html, glossary_html
 # Plotly.js CDN — loaded once per report. Charts emit only their <div>.
 PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js"
 
-# ── Colour palette (matches scanner.py) ────────────────────────────────────
-BG      = "#0d1117"
-SURFACE = "#161b22"
-BORDER  = "#30363d"
-BLUE    = "#1f6feb"
-BLUE_LT = "#58a6ff"
-GREEN   = "#3fb950"
-AMBER   = "#f0883e"
-RED     = "#ff7b72"
-TEXT    = "#e6edf3"
-MUTED   = "#8b949e"
+# ── Colour palette (editorial / research-note aesthetic) ───────────────────
+# Ink black background, paper-cream typography, single amber accent.
+# Sharp signal colors only used on data — chrome stays monochrome.
+BG       = "#0a0b0d"       # near-pure ink
+SURFACE  = "#111316"       # subtle layer
+SURFACE2 = "#16191d"       # second-level surface (tables, nav)
+BORDER   = "#21252b"       # hairlines
+BORDER_2 = "#2c3037"       # stronger hairlines (section dividers)
+TEXT     = "#e8e2d4"       # paper cream (warm, not pure white)
+TEXT_DIM = "#c4bda9"       # softened text
+MUTED    = "#7a7669"       # supporting copy
+FAINT    = "#4a4842"       # captions / metadata
+
+# Signal colors — used SPARSELY for data emphasis only
+AMBER    = "#c9a449"       # primary accent (gold/amber)
+AMBER_DK = "#8a701f"       # darker amber for backgrounds
+GREEN    = "#7ea668"       # earthy green (positive)
+RED      = "#b4544a"       # earthy red (negative)
+BLUE_LT  = "#7a93a8"       # cool grey-blue (links)
+
+# Legacy aliases (some functions still reference these)
+BLUE     = BLUE_LT
 
 # ── Plotly helpers ───────────────────────────────────────────────────────────
 
 _DARK_LAYOUT = dict(
     paper_bgcolor=BG,
-    plot_bgcolor=SURFACE,
+    plot_bgcolor=BG,                # no chart-bg fill — keep it flat
     font=dict(
-        family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif',
-        color=TEXT,
-        size=12,
+        family='"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+        color=TEXT_DIM,
+        size=11,
     ),
-    margin=dict(l=10, r=10, t=40, b=30),
-    hoverlabel=dict(bgcolor=SURFACE, bordercolor=BORDER, font=dict(color=TEXT)),
+    margin=dict(l=12, r=12, t=36, b=28),
+    hoverlabel=dict(
+        bgcolor=SURFACE2,
+        bordercolor=AMBER_DK,
+        font=dict(family='"JetBrains Mono", monospace', color=TEXT, size=12),
+    ),
 )
+
+# Axis defaults applied via update_xaxes / update_yaxes — avoids
+# kwarg collisions when callers also pass xaxis/yaxis to update_layout.
+_AXIS_DEFAULTS = dict(
+    gridcolor=BORDER,
+    zerolinecolor=BORDER,
+    linecolor=BORDER,
+    tickfont=dict(
+        family='"JetBrains Mono", monospace', size=10, color=MUTED
+    ),
+)
+
+
+def _apply_axis_theme(fig):
+    """Apply the dark axis theme to every axis on the figure."""
+    try:
+        fig.update_xaxes(**_AXIS_DEFAULTS)
+        fig.update_yaxes(**_AXIS_DEFAULTS)
+    except Exception:
+        pass
+    return fig
 
 
 def fig_to_html(fig) -> str:
@@ -58,6 +94,7 @@ def fig_to_html(fig) -> str:
     The plotly.js library is *not* embedded — it is loaded once via a
     <script src=...> tag at the top of the report.
     """
+    _apply_axis_theme(fig)
     return fig.to_html(
         include_plotlyjs=False,
         full_html=False,
@@ -642,111 +679,547 @@ def _fmt_mcap(v) -> str:
     return f"${v/1e6:.0f}M"
 
 
-# ── Shared CSS ────────────────────────────────────────────────────────────────
+# ── Shared CSS — editorial research-note aesthetic ────────────────────────────
+
+# Fonts loaded from Google Fonts:
+#   Newsreader (transitional serif, editorial display) — body + display
+#   JetBrains Mono (data, numbers, ticker symbols)
+#   Inter Tight (UI chrome, small labels — used sparingly)
+FONTS_LINK = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    '<link href="https://fonts.googleapis.com/css2?'
+    'family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;'
+    '0,6..72,700;0,6..72,800;1,6..72,400&'
+    'family=JetBrains+Mono:wght@400;500;600;700&'
+    'family=Inter+Tight:wght@400;500;600;700&'
+    'display=swap" rel="stylesheet">'
+)
+
 
 def _css() -> str:
     return f"""
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+html{{scroll-behavior:smooth;scroll-padding-top:88px}}
 body{{
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",
-              Arial,sans-serif;
-  background:{BG};color:{TEXT};line-height:1.55;font-size:14px
+  font-family:"Newsreader","Iowan Old Style","Apple Garamond",Georgia,serif;
+  background:{BG};color:{TEXT};
+  font-size:16px;line-height:1.55;font-weight:400;
+  font-feature-settings:"kern" 1,"liga" 1,"calt" 1,"onum" 1,"pnum" 1;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  background-image:radial-gradient(at 20% 0%,rgba(201,164,73,0.025) 0%,transparent 50%),
+                   radial-gradient(at 80% 100%,rgba(122,147,168,0.02) 0%,transparent 50%);
+  background-attachment:fixed;
 }}
-.wrap{{max-width:1100px;margin:0 auto;padding:0 16px 56px}}
-.sec{{margin-bottom:36px}}
+
+/* ── Typography rhythm ─────────────────────────────────────── */
+.mono,th[data-sort],td.num,td.tk,.pill-num{{
+  font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums;
+}}
+.ui{{font-family:"Inter Tight",-apple-system,system-ui,sans-serif}}
+
+/* ── Layout ────────────────────────────────────────────────── */
+.wrap{{max-width:1180px;margin:0 auto;padding:0 32px 88px}}
+@media(max-width:720px){{.wrap{{padding:0 16px 56px}}}}
+
+/* ── Top nav: sticky scrollspy ─────────────────────────────── */
+.topnav{{
+  position:sticky;top:0;z-index:50;
+  background:rgba(10,11,13,0.82);
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid {BORDER};
+  margin:0 -32px 0;padding:0 32px;
+}}
+@media(max-width:720px){{.topnav{{margin:0 -16px;padding:0 16px}}}}
+.topnav-inner{{
+  max-width:1180px;margin:0 auto;
+  display:flex;align-items:center;gap:24px;height:56px;
+  overflow-x:auto;scrollbar-width:none;
+}}
+.topnav-inner::-webkit-scrollbar{{display:none}}
+.topnav-brand{{
+  font-family:"Newsreader",Georgia,serif;font-weight:600;font-size:15px;
+  color:{TEXT};letter-spacing:-0.01em;white-space:nowrap;
+  display:flex;align-items:center;gap:10px;
+}}
+.topnav-brand::before{{
+  content:"";width:7px;height:7px;border-radius:50%;
+  background:{AMBER};box-shadow:0 0 8px rgba(201,164,73,0.6);
+  animation:pulse 2.4s ease-in-out infinite;
+}}
+@keyframes pulse{{
+  0%,100%{{opacity:1;transform:scale(1)}}
+  50%{{opacity:.55;transform:scale(.78)}}
+}}
+.topnav-links{{
+  display:flex;align-items:center;gap:2px;flex:1;
+}}
+.topnav-link{{
+  font-family:"Inter Tight",sans-serif;
+  font-size:11.5px;font-weight:500;letter-spacing:0.04em;text-transform:uppercase;
+  color:{MUTED};text-decoration:none;padding:8px 12px;border-radius:0;
+  position:relative;transition:color .15s ease;white-space:nowrap;
+}}
+.topnav-link:hover{{color:{TEXT_DIM}}}
+.topnav-link.active{{color:{AMBER}}}
+.topnav-link.active::after{{
+  content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:1px;
+  background:{AMBER};
+}}
+.topnav-meta{{
+  font-family:"JetBrains Mono",monospace;font-size:11px;
+  color:{FAINT};white-space:nowrap;letter-spacing:-0.01em;
+}}
+
+/* ── Masthead / hero ───────────────────────────────────────── */
+.masthead{{
+  padding:56px 0 40px;border-bottom:1px solid {BORDER_2};margin-bottom:48px;
+  position:relative;
+}}
+.masthead-kicker{{
+  font-family:"Inter Tight",sans-serif;
+  font-size:11px;font-weight:600;letter-spacing:0.22em;text-transform:uppercase;
+  color:{AMBER};margin-bottom:18px;
+}}
+.masthead-title{{
+  font-family:"Newsreader",serif;font-weight:500;
+  font-size:clamp(38px,5.5vw,68px);line-height:1.02;letter-spacing:-0.025em;
+  color:{TEXT};margin-bottom:18px;font-variation-settings:"opsz" 72;
+}}
+.masthead-title em{{
+  font-style:italic;font-weight:500;color:{TEXT_DIM};
+  font-feature-settings:"swsh" 1,"salt" 1;
+}}
+.masthead-sub{{
+  font-family:"Newsreader",serif;font-style:italic;font-size:19px;color:{MUTED};
+  margin-bottom:28px;max-width:680px;line-height:1.5;
+}}
+.masthead-strip{{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:0;
+  border-top:1px solid {BORDER};border-bottom:1px solid {BORDER};
+  margin-top:32px;
+}}
+@media(max-width:720px){{
+  .masthead-strip{{grid-template-columns:repeat(2,1fr)}}
+  .masthead-strip > *:nth-child(2){{border-right:none}}
+}}
+.masthead-stat{{
+  padding:18px 22px;border-right:1px solid {BORDER};
+}}
+.masthead-stat:last-child{{border-right:none}}
+.masthead-stat-label{{
+  font-family:"Inter Tight",sans-serif;font-size:9.5px;font-weight:600;
+  letter-spacing:0.18em;text-transform:uppercase;color:{FAINT};
+  margin-bottom:8px;
+}}
+.masthead-stat-val{{
+  font-family:"JetBrains Mono",monospace;font-size:24px;font-weight:500;
+  color:{TEXT};letter-spacing:-0.02em;line-height:1;
+  font-variant-numeric:tabular-nums;
+}}
+.masthead-stat-val.amber{{color:{AMBER}}}
+.masthead-stat-val.green{{color:{GREEN}}}
+.masthead-stat-val.red{{color:{RED}}}
+.masthead-stat-sub{{
+  font-family:"Inter Tight",sans-serif;font-size:11px;color:{MUTED};
+  margin-top:5px;letter-spacing:0.01em;
+}}
+
+/* ── Sections ─────────────────────────────────────────────── */
+.sec{{margin-bottom:64px;scroll-margin-top:88px}}
+.sec-head{{
+  display:flex;align-items:baseline;gap:18px;
+  margin-bottom:24px;padding-bottom:14px;
+  border-bottom:1px solid {BORDER_2};
+}}
+.sec-num{{
+  font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:500;
+  color:{FAINT};letter-spacing:0;line-height:1;
+}}
 .sec-title{{
-  font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
-  color:{MUTED};border-bottom:1px solid {BORDER};
-  padding-bottom:9px;margin-bottom:18px
+  font-family:"Newsreader",serif;font-weight:500;font-size:30px;
+  letter-spacing:-0.02em;color:{TEXT};line-height:1.1;
+  font-variation-settings:"opsz" 48;
 }}
+.sec-title em{{font-style:italic;color:{TEXT_DIM}}}
+.sec-lede{{
+  font-family:"Newsreader",serif;font-style:italic;font-size:16px;
+  color:{MUTED};margin:-6px 0 22px;max-width:720px;line-height:1.6;
+}}
+.subsec-title{{
+  font-family:"Inter Tight",sans-serif;font-size:11px;font-weight:600;
+  letter-spacing:0.16em;text-transform:uppercase;color:{TEXT_DIM};
+  margin:24px 0 12px;
+}}
+
+/* ── Cards (now hairline rules, not bubbles) ──────────────── */
 .card{{
-  background:{SURFACE};border:1px solid {BORDER};
-  border-radius:8px;padding:16px;margin-bottom:12px
+  background:transparent;border:none;
+  border-top:1px solid {BORDER};
+  padding:18px 0 6px;margin-bottom:0;
 }}
-table{{width:100%;border-collapse:collapse;font-size:13px}}
+.card-row{{
+  display:grid;grid-template-columns:160px 1fr auto;gap:24px;
+  align-items:baseline;padding:14px 0;
+  border-top:1px solid {BORDER};
+}}
+.card-row:first-child{{border-top:none}}
+
+/* ── Tables ───────────────────────────────────────────────── */
+table{{
+  width:100%;border-collapse:collapse;font-size:13px;
+}}
+thead{{border-bottom:1px solid {BORDER_2}}}
 th{{
-  color:{MUTED};font-weight:600;font-size:10px;text-transform:uppercase;
-  letter-spacing:.06em;padding:7px 8px;border-bottom:1px solid {BORDER};
-  text-align:left
+  font-family:"Inter Tight",sans-serif;
+  color:{FAINT};font-weight:600;font-size:10px;text-transform:uppercase;
+  letter-spacing:0.12em;padding:11px 10px 11px 0;text-align:left;
+  position:relative;user-select:none;
 }}
-td{{padding:8px;border-bottom:1px solid {SURFACE};vertical-align:middle}}
-tr:last-child td{{border-bottom:none}}
-tr:hover td{{background:#21262d}}
-.badge{{
-  display:inline-block;padding:2px 8px;border-radius:20px;
-  font-size:11px;font-weight:700
+th.num,td.num{{text-align:right;padding-right:10px}}
+th[data-sort]{{cursor:pointer;transition:color .12s ease}}
+th[data-sort]:hover{{color:{TEXT_DIM}}}
+th[data-sort]::after{{
+  content:"⇅";color:{FAINT};font-size:9px;
+  margin-left:6px;opacity:.5;
 }}
+th[data-sort].sort-asc::after{{content:"↑";color:{AMBER};opacity:1}}
+th[data-sort].sort-desc::after{{content:"↓";color:{AMBER};opacity:1}}
+td{{
+  padding:11px 10px 11px 0;
+  border-bottom:1px solid {BORDER};
+  vertical-align:baseline;color:{TEXT};
+}}
+tbody tr:last-child td{{border-bottom:none}}
+tbody tr{{transition:background .12s ease}}
+tbody tr:hover{{background:rgba(201,164,73,0.04)}}
+td.tk{{
+  font-weight:600;letter-spacing:0;color:{TEXT};
+}}
+td.tk .ticker-symbol{{
+  font-family:"JetBrains Mono",monospace;font-weight:600;
+  font-size:13px;letter-spacing:0.01em;
+}}
+td .row-sub{{
+  font-family:"Inter Tight",sans-serif;font-size:10.5px;color:{FAINT};
+  margin-top:3px;letter-spacing:0.01em;
+}}
+td.reason{{
+  font-family:"Newsreader",serif;font-style:italic;font-size:13px;
+  color:{TEXT_DIM};line-height:1.45;
+}}
+
+/* ── Numeric color signal ────────────────────────────────── */
+.pos{{color:{GREEN}}}
+.neg{{color:{RED}}}
+.muted{{color:{MUTED}}}
+.faint{{color:{FAINT}}}
+.amber{{color:{AMBER}}}
+
+/* ── Ticker pill / held badge ────────────────────────────── */
+.held-badge{{
+  display:inline-block;font-family:"Inter Tight",sans-serif;
+  font-size:9px;font-weight:700;color:{AMBER};
+  background:rgba(201,164,73,0.10);
+  border:1px solid rgba(201,164,73,0.32);
+  padding:1px 5px;border-radius:2px;margin-left:6px;
+  letter-spacing:0.08em;text-transform:uppercase;
+  vertical-align:middle;line-height:1.2;
+}}
+.tag{{
+  display:inline-block;font-family:"Inter Tight",sans-serif;
+  font-size:10px;font-weight:600;color:{MUTED};
+  background:{SURFACE2};border:1px solid {BORDER};
+  padding:2px 8px;border-radius:0;letter-spacing:0.04em;
+  text-transform:uppercase;
+}}
+.tag.amber{{color:{AMBER};border-color:rgba(201,164,73,0.32);
+            background:rgba(201,164,73,0.08)}}
+
+/* ── Explainers ─────────────────────────────────────────── */
 details.explainer{{
-  background:{BG};border:1px solid {BORDER};border-radius:6px;
-  padding:8px 12px;margin:8px 0 14px;font-size:12px
+  background:transparent;border:none;border-left:2px solid {AMBER_DK};
+  padding:6px 0 6px 16px;margin:12px 0 18px;font-size:13.5px;
 }}
 details.explainer summary{{
-  cursor:pointer;color:{BLUE_LT};font-weight:600;list-style:none;
-  outline:none
+  cursor:pointer;color:{AMBER};font-weight:500;list-style:none;
+  outline:none;font-family:"Inter Tight",sans-serif;
+  font-size:11px;letter-spacing:0.12em;text-transform:uppercase;
 }}
-details.explainer summary::-webkit-details-marker{{display:none}}
+details.explainer summary::-webkit-details-marker,
+details.explainer summary::marker{{display:none}}
+details.explainer summary::before{{
+  content:"+";display:inline-block;width:14px;
+  font-family:"JetBrains Mono",monospace;color:{AMBER};
+  transition:transform .15s ease;
+}}
+details.explainer[open] summary::before{{content:"−"}}
 details.explainer p{{
-  margin-top:8px;color:{MUTED};line-height:1.6
+  margin-top:10px;color:{TEXT_DIM};line-height:1.65;
+  font-family:"Newsreader",serif;font-size:14px;
+  max-width:680px;
 }}
-.grid-4{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}}
-.stat-box{{background:{BG};padding:10px;border-radius:6px;font-size:12px}}
-.stat-label{{color:{MUTED};margin-bottom:3px;font-size:11px}}
-.stat-val{{font-weight:700;color:{TEXT}}}
-.held-badge{{
-  font-size:10px;font-weight:700;color:{AMBER};
-  background:#3d2800;padding:1px 6px;border-radius:10px;
-  margin-left:5px
-}}
+
+/* ── Pulse / market state strip (used by daily) ──────────── */
 .pulse-strip{{
-  display:flex;flex-wrap:wrap;background:{SURFACE};
-  border:1px solid {BORDER};border-radius:8px;overflow:hidden
+  display:grid;grid-template-columns:repeat(4,1fr);gap:0;
+  border-top:1px solid {BORDER};border-bottom:1px solid {BORDER};
+  margin:18px 0 0;
 }}
 .pulse-cell{{
-  flex:1 1 120px;text-align:center;padding:14px 20px;
-  border-right:1px solid {BORDER}
+  padding:18px 20px;border-right:1px solid {BORDER};text-align:left;
 }}
 .pulse-cell:last-child{{border-right:none}}
-.glossary dl{{display:block}}
-.glossary-term{{
-  background:{SURFACE};border:1px solid {BORDER};border-radius:6px;
-  padding:12px 14px;margin-bottom:8px
+@media(max-width:720px){{
+  .pulse-strip{{grid-template-columns:repeat(2,1fr)}}
 }}
-.glossary-term dt{{color:{TEXT};font-weight:700;margin-bottom:4px}}
-.glossary-term dd{{color:{MUTED};font-size:13px;line-height:1.6;margin-left:0}}
+
+/* ── Chart containers ────────────────────────────────────── */
 .chart-container{{
-  background:{BG};border:1px solid {BORDER};border-radius:8px;
-  padding:12px;margin:16px 0;overflow:hidden
+  background:transparent;border:none;
+  border-top:1px solid {BORDER};border-bottom:1px solid {BORDER};
+  padding:24px 0;margin:24px 0;overflow:hidden;
 }}
 .chart-container .js-plotly-plot{{width:100% !important}}
-@media(max-width:600px){{
-  .grid-4{{grid-template-columns:repeat(2,1fr)}}
-  .wrap{{padding:0 10px 32px}}
-  .chart-container{{padding:6px}}
+
+/* ── Backtest panel ──────────────────────────────────────── */
+details.backtest-panel{{
+  background:transparent;border-top:1px solid {BORDER};
+  padding:16px 0;margin:14px 0 0;
+}}
+details.backtest-panel summary{{
+  cursor:pointer;list-style:none;outline:none;
+  font-family:"Inter Tight",sans-serif;font-size:11px;font-weight:600;
+  letter-spacing:0.14em;text-transform:uppercase;color:{TEXT_DIM};
+  display:flex;align-items:center;gap:10px;
+}}
+details.backtest-panel summary::-webkit-details-marker,
+details.backtest-panel summary::marker{{display:none}}
+details.backtest-panel summary::before{{
+  content:"▸";font-size:10px;color:{AMBER};
+  transition:transform .15s ease;display:inline-block;
+}}
+details.backtest-panel[open] summary::before{{transform:rotate(90deg)}}
+.backtest-grid{{
+  display:grid;grid-template-columns:repeat(6,1fr);gap:24px;
+  margin-top:14px;padding-top:14px;border-top:1px dashed {BORDER};
+}}
+@media(max-width:720px){{.backtest-grid{{grid-template-columns:repeat(3,1fr)}}}}
+.backtest-cell-label{{
+  font-family:"Inter Tight",sans-serif;font-size:9px;font-weight:600;
+  letter-spacing:0.14em;text-transform:uppercase;color:{FAINT};
+  margin-bottom:6px;
+}}
+.backtest-cell-val{{
+  font-family:"JetBrains Mono",monospace;font-size:18px;font-weight:500;
+  color:{TEXT};font-variant-numeric:tabular-nums;letter-spacing:-0.02em;
+}}
+
+/* ── Watchlist / pre-IPO / glossary cards ────────────────── */
+.list-row{{
+  display:grid;grid-template-columns:180px 1fr;gap:32px;
+  padding:18px 0;border-top:1px solid {BORDER};align-items:baseline;
+}}
+.list-row:first-child{{border-top:none}}
+.list-row-label{{
+  font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:600;
+  color:{TEXT};letter-spacing:0.01em;
+}}
+.list-row-body p{{
+  font-family:"Newsreader",serif;font-size:14.5px;color:{TEXT_DIM};
+  line-height:1.55;
+}}
+.list-row-meta{{
+  font-family:"Inter Tight",sans-serif;font-size:11px;color:{MUTED};
+  margin-top:6px;letter-spacing:0.02em;
+}}
+
+.glossary dl{{display:block}}
+.glossary-term{{
+  display:grid;grid-template-columns:200px 1fr;gap:32px;
+  padding:20px 0;border-top:1px solid {BORDER};
+}}
+@media(max-width:720px){{
+  .glossary-term{{grid-template-columns:1fr;gap:8px}}
+}}
+.glossary-term:first-child{{border-top:1px solid {BORDER_2}}}
+.glossary-term dt{{
+  font-family:"Newsreader",serif;font-weight:500;font-size:18px;color:{TEXT};
+  letter-spacing:-0.01em;line-height:1.3;
+}}
+.glossary-term dd{{
+  font-family:"Newsreader",serif;color:{TEXT_DIM};
+  font-size:14.5px;line-height:1.65;margin-left:0;max-width:680px;
+}}
+
+/* ── Footer ──────────────────────────────────────────────── */
+.footer{{
+  border-top:1px solid {BORDER_2};margin-top:80px;padding:32px 0 0;
+  font-family:"Inter Tight",sans-serif;font-size:11px;color:{FAINT};
+  letter-spacing:0.04em;display:flex;justify-content:space-between;
+  align-items:center;flex-wrap:wrap;gap:12px;
+}}
+.footer-mark{{
+  font-family:"Newsreader",serif;font-style:italic;font-size:13px;
+  color:{MUTED};
+}}
+
+/* ── Mobile ──────────────────────────────────────────────── */
+@media(max-width:720px){{
+  body{{font-size:15px}}
+  .sec-title{{font-size:24px}}
+  .masthead{{padding:36px 0 24px;margin-bottom:32px}}
+  .backtest-cell-val{{font-size:15px}}
+  th,td{{font-size:12px;padding:8px 6px 8px 0}}
+  .topnav-meta{{display:none}}
+}}
+
+/* ── Print (because real research notes get printed) ─────── */
+@media print{{
+  .topnav{{display:none}}
+  body{{background:white;color:black}}
+  .masthead-stat-val{{color:black !important}}
 }}
 """
 
 
-def _html_shell(title: str, body: str, report_date: date = None) -> str:
-    """Wrap body content in a complete HTML document."""
+def _scrollspy_js() -> str:
+    """Inline JavaScript for sortable tables + scrollspy navigation."""
+    return r"""
+(function(){
+  'use strict';
+
+  /* ── Sortable tables ──────────────────────────────────── */
+  function parseSortValue(cell) {
+    // Prefer data-sort-value if present, else parse text
+    var v = cell.getAttribute('data-sort-value');
+    if (v !== null) return parseFloat(v) || v;
+    var t = (cell.innerText || cell.textContent || '').trim();
+    // Strip currency, commas, percent, plus/minus
+    var cleaned = t.replace(/[$,%]/g, '').replace(/—|—/g, '').trim();
+    if (cleaned === '' || cleaned === '-' || cleaned === '–') return -Infinity;
+    var n = parseFloat(cleaned);
+    return isNaN(n) ? t.toLowerCase() : n;
+  }
+  function makeSortable(table) {
+    var thead = table.querySelector('thead');
+    if (!thead) return;
+    var headers = thead.querySelectorAll('th[data-sort]');
+    headers.forEach(function(th, colIdx) {
+      th.addEventListener('click', function() {
+        var tbody = table.querySelector('tbody');
+        if (!tbody) return;
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+        var asc = !th.classList.contains('sort-asc');
+        // Reset other headers
+        headers.forEach(function(h){
+          h.classList.remove('sort-asc','sort-desc');
+        });
+        th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+        // Find actual column index in row cells
+        var idx = Array.prototype.indexOf.call(thead.querySelectorAll('th'), th);
+        rows.sort(function(a, b){
+          var av = parseSortValue(a.cells[idx]);
+          var bv = parseSortValue(b.cells[idx]);
+          if (av === bv) return 0;
+          if (typeof av === 'number' && typeof bv === 'number') {
+            return asc ? av - bv : bv - av;
+          }
+          return asc ? String(av).localeCompare(String(bv))
+                     : String(bv).localeCompare(String(av));
+        });
+        rows.forEach(function(r){ tbody.appendChild(r); });
+      });
+    });
+  }
+  document.querySelectorAll('table.sortable').forEach(makeSortable);
+
+  /* ── Scrollspy: highlight nav link of current section ─── */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('section[id], div.sec[id]'));
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.topnav-link'));
+  if (sections.length && navLinks.length && 'IntersectionObserver' in window) {
+    var byId = {};
+    navLinks.forEach(function(l){
+      var id = (l.getAttribute('href') || '').replace('#','');
+      if (id) byId[id] = l;
+    });
+    var observer = new IntersectionObserver(function(entries) {
+      // Find the entry closest to the top that's intersecting
+      var visible = entries.filter(function(e){ return e.isIntersecting; });
+      if (!visible.length) return;
+      visible.sort(function(a,b){ return a.boundingClientRect.top - b.boundingClientRect.top; });
+      var id = visible[0].target.id;
+      var link = byId[id];
+      if (link) {
+        navLinks.forEach(function(l){ l.classList.remove('active'); });
+        link.classList.add('active');
+      }
+    }, { rootMargin: '-80px 0px -65% 0px', threshold: 0 });
+    sections.forEach(function(s){ observer.observe(s); });
+  }
+
+  /* ── Smooth scroll for in-page links (browser fallback) ── */
+  document.querySelectorAll('a[href^="#"]').forEach(function(a){
+    a.addEventListener('click', function(e){
+      var href = a.getAttribute('href');
+      if (href === '#' || href.length < 2) return;
+      var el = document.querySelector(href);
+      if (el) {
+        e.preventDefault();
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        history.pushState(null, '', href);
+      }
+    });
+  });
+})();
+"""
+
+
+def _html_shell(title: str, body: str, report_date: date = None,
+                 nav_links: list = None, nav_meta: str = None) -> str:
+    """Wrap body content in a complete HTML document with masthead + sticky nav."""
     d = (report_date or date.today()).strftime("%A, %B %d, %Y")
     now_str = datetime.now().strftime("%H:%M ET")
+    nav_links = nav_links or []
+    nav_links_html = "".join(
+        f'<a class="topnav-link" href="#{anchor}">{label}</a>'
+        for anchor, label in nav_links
+    )
+    meta_html = (
+        f'<span class="topnav-meta">{nav_meta}</span>' if nav_meta else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
+{FONTS_LINK}
 <script src="{PLOTLY_CDN}" charset="utf-8"></script>
 <style>{_css()}</style>
 </head>
-<body><div class="wrap">
+<body>
+<nav class="topnav">
+  <div class="topnav-inner">
+    <div class="topnav-brand">Market Brief</div>
+    <div class="topnav-links">{nav_links_html}</div>
+    {meta_html}
+  </div>
+</nav>
+<div class="wrap">
 {body}
-<div style="border-top:1px solid {BORDER};padding-top:16px;
-            font-size:11px;color:#6e7681;text-align:center;margin-top:32px">
-  Not financial advice &middot; data via yfinance / Yahoo Finance
-  &middot; generated {now_str}
+<div class="footer">
+  <div>
+    <span class="footer-mark">An automated market intelligence brief.</span>
+    &nbsp;Not financial advice. Data via yfinance, FRED, AAII, SEC EDGAR.
+  </div>
+  <div>Generated {now_str}</div>
 </div>
-</div></body></html>"""
+</div>
+<script>{_scrollspy_js()}</script>
+</body></html>"""
 
 
 def _header(label: str, date_str: str, subtitle: str = "") -> str:
@@ -836,15 +1309,15 @@ def _breadth_strip(new_highs_lows: dict) -> str:
 
     if not items:
         return ""
-    inner = "  &nbsp;&middot;&nbsp;  ".join(items)
+    inner = "  &nbsp;·&nbsp;  ".join(items)
     return f"""
-<div class="sec">
-  <div class="sec-title">Market breadth</div>
-  <div style="background:{SURFACE};border:1px solid {BORDER};border-radius:8px;
-              padding:14px 18px;font-size:13px;color:{MUTED}">
+<section id="breadth" class="sec">
+  {_section_head("08", "Market", "breadth", "Universe-level health check — new highs, new lows, percentage above key moving averages.")}
+  <div class="mono" style="font-size:13px;color:{TEXT_DIM};padding:18px 0;
+                            line-height:1.8;letter-spacing:0.01em">
     {inner}
   </div>
-</div>"""
+</section>"""
 
 
 def _gap_movers_section(gap_movers: list[dict]) -> str:
@@ -1019,51 +1492,72 @@ def build_daily_report(
 def _theme_section(ranked_themes: list[dict], emerging_clusters: list[dict]) -> str:
     heatmap_div = chart_theme_heatmap(ranked_themes)
 
-    # Top 5 themes with members
+    # Top 5 themes with members — as a numbered list
     top5 = ranked_themes[:5] if ranked_themes else []
     theme_cards = ""
-    for t in top5:
+    for i, t in enumerate(top5, 1):
         members = t.get("members", [])
-        mem_str = ", ".join(str(m) for m in members[:8])
+        mem_str = ", ".join(str(m) for m in members[:10])
         score = t.get("theme_score", t.get("score", 0))
-        c = GREEN if score > 0 else RED
+        score_class = "pos" if score > 0 else "neg"
         theme_cards += f"""
-<div class="card" style="margin-bottom:8px">
-  <div style="display:flex;justify-content:space-between;align-items:baseline">
-    <span style="font-weight:700;font-size:15px;color:{TEXT}">{t.get('name','?')}</span>
-    <span style="font-size:12px;color:{c};font-weight:600">
-      score {score:+.2f}</span>
+<div class="list-row">
+  <div>
+    <div class="ui faint" style="font-size:9.5px;letter-spacing:0.18em;
+                                    text-transform:uppercase;margin-bottom:6px">
+      #{i:02d} &nbsp;·&nbsp; <span class="mono {score_class}">{score:+.2f}</span>
+    </div>
+    <div style="font-family:'Newsreader',serif;font-weight:500;font-size:18px;
+                color:{TEXT};letter-spacing:-0.01em">
+      {t.get('name','?')}
+    </div>
   </div>
-  {f'<div style="font-size:12px;color:{MUTED};margin-top:5px">{mem_str}</div>' if mem_str else ''}
+  <div class="list-row-body">
+    <p class="mono" style="font-size:12px;color:{TEXT_DIM};line-height:1.7;letter-spacing:0.02em">
+      {mem_str}
+    </p>
+  </div>
 </div>"""
 
     # Emerging clusters
     cluster_html = ""
     if emerging_clusters:
-        cluster_html = f'<div class="sec-title" style="margin-top:20px">Emerging clusters</div>'
+        cluster_html = '<div class="subsec-title" style="margin-top:36px">Emerging clusters</div>'
         for cl in emerging_clusters:
             members = cl.get("members") or cl.get("tickers") or []
-            tickers = ", ".join(str(m) for m in members[:6])
+            tickers = ", ".join(str(m) for m in members[:8])
             label = cl.get("label") or cl.get("theme") or "Unnamed cluster"
             delta = cl.get("delta")
             note = cl.get("note")
             if delta is not None and not note:
                 note = f"Internal correlation rose by {delta:+.2f} over the last 60 days"
             cluster_html += f"""
-<div class="card" style="margin-bottom:8px">
-  <span style="font-weight:700;color:{AMBER}">{label}</span>
-  <span style="font-size:12px;color:{MUTED};margin-left:10px">{tickers}</span>
-  {f'<div style="font-size:11px;color:#6e7681;margin-top:4px">{note}</div>' if note else ''}
+<div class="list-row">
+  <div>
+    <div class="ui amber" style="font-size:9.5px;letter-spacing:0.18em;
+                                    text-transform:uppercase;margin-bottom:6px">Emerging</div>
+    <div style="font-family:'Newsreader',serif;font-weight:500;font-size:17px;
+                color:{AMBER};letter-spacing:-0.01em">
+      {label}
+    </div>
+    {f'<div class="list-row-meta">{note}</div>' if note else ''}
+  </div>
+  <div class="list-row-body">
+    <p class="mono" style="font-size:12px;color:{TEXT_DIM};line-height:1.7;letter-spacing:0.02em">
+      {tickers}
+    </p>
+  </div>
 </div>"""
 
     return f"""
-<div class="sec">
-  <div class="sec-title">Theme heatmap</div>
+<section id="themes" class="sec">
+  {_section_head("02", "Thematic", "strength", "Sixteen curated baskets z-scored across six dimensions; emerging clusters auto-detected via Mantegna correlation distance.")}
   {_chart(heatmap_div)}
   {explainer_html("theme_strength", "Theme Strength Score")}
+  <div class="subsec-title">Top five themes by composite score</div>
   {theme_cards}
   {cluster_html}
-</div>"""
+</section>"""
 
 
 def _sector_section(sector_rotation: list[dict]) -> str:
@@ -1081,52 +1575,70 @@ def _sector_section(sector_rotation: list[dict]) -> str:
 
     extra = ""
     if rotation_call:
-        extra += f'<div style="font-size:13px;color:{BLUE_LT};margin-bottom:6px">&#128260; {rotation_call}</div>'
+        extra += (
+            f'<div style="font-family:\'Newsreader\',serif;font-style:italic;'
+            f'font-size:16px;color:{AMBER};margin:14px 0 6px;line-height:1.4;'
+            f'max-width:680px">↺ &nbsp;{rotation_call}</div>'
+        )
     if stovall:
-        extra += f'<div style="font-size:12px;color:{MUTED}">Stovall phase: <strong style="color:{TEXT}">{stovall}</strong></div>'
+        extra += (
+            f'<div class="ui" style="font-size:11px;color:{MUTED};'
+            f'letter-spacing:0.04em">Inferred cycle phase: '
+            f'<strong style="color:{TEXT}">{stovall}</strong></div>'
+        )
 
     return f"""
-<div class="sec">
-  <div class="sec-title">Sector rotation</div>
+<section id="sectors" class="sec">
+  {_section_head("03", "Sector", "rotation", "Eleven SPDR sector ETFs ranked by Faber-style momentum: 0.6 × 3-month relative strength + 0.4 × 6-month.")}
   {_chart(sector_div)}
   {extra}
   {explainer_html("sector_rotation", "Sector Rotation")}
-</div>"""
+</section>"""
 
 
 def _candidate_table_row(c: dict, held_tickers: set) -> str:
     ticker = c.get("ticker", "?")
     is_held = ticker.upper() in held_tickers
-    held_badge = '<span class="held-badge">HELD</span>' if is_held else ""
+    held_badge = '<span class="held-badge">Held</span>' if is_held else ""
     name = c.get("name", "")
-    price = _fmt_price(c.get("price"))
+    price_val = c.get("price")
+    price = _fmt_price(price_val)
     rsi = c.get("rsi")
-    rsi_c = RED if (rsi or 0) > 75 else (GREEN if (rsi or 0) < 35 else TEXT)
-    # screens.py stores it as pct_from_52wh (negative value: 0 = at high, -10 = 10% below)
-    # Older API used "from_hi" (positive value: 10 = 10% below)
+    rsi_c = "neg" if (rsi or 0) > 75 else ("pos" if (rsi or 0) < 35 else "")
     pct_from_52wh = c.get("pct_from_52wh")
     if pct_from_52wh is not None:
-        from_hi_display = abs(pct_from_52wh)  # convert to positive for display
+        from_hi_display = abs(pct_from_52wh)
     else:
         from_hi_display = c.get("from_hi")
-    fh_c = GREEN if from_hi_display and 10 <= from_hi_display <= 40 else AMBER
+    fh_c = "pos" if from_hi_display and 10 <= from_hi_display <= 40 else "amber"
     rev = c.get("rev_growth")
     buy_pct = c.get("buy_pct")
     reason = c.get("reason", c.get("verdict", ""))
     rsi_display = f"{rsi:.0f}" if isinstance(rsi, (int, float)) else "—"
     buy_pct_display = f"{buy_pct:.0f}%" if isinstance(buy_pct, (int, float)) else "—"
 
+    # data-sort-value for proper numeric sorting; cells render formatted text
+    rsi_sort = f"{rsi:.2f}" if isinstance(rsi, (int, float)) else "-9999"
+    fhi_sort = f"{from_hi_display:.2f}" if isinstance(from_hi_display, (int, float)) else "-9999"
+    price_sort = f"{price_val:.4f}" if isinstance(price_val, (int, float)) else "-9999"
+    rev_sort = f"{rev:.2f}" if isinstance(rev, (int, float)) else "-9999"
+    buy_sort = f"{buy_pct:.2f}" if isinstance(buy_pct, (int, float)) else "-9999"
+    rev_disp = _fmt_pct(rev) if rev else "—"
+    fhi_disp = _fmt_pct(from_hi_display) if from_hi_display is not None else "—"
+
+    name_sub = (
+        f'<div class="row-sub">{name[:32]}</div>' if name else ""
+    )
     return f"""<tr>
-  <td>
-    <span style="font-weight:700;color:{TEXT}">{ticker}</span>{held_badge}
-    <div style="font-size:11px;color:{MUTED}">{name[:22]}</div>
+  <td class="tk" data-sort-value="{ticker}">
+    <span class="ticker-symbol">{ticker}</span>{held_badge}{name_sub}
   </td>
-  <td style="font-size:11px;color:{MUTED}">{reason[:60]}</td>
-  <td style="font-weight:700">{price}</td>
-  <td style="color:{rsi_c}">{rsi_display}</td>
-  <td style="color:{fh_c}">{_fmt_pct(from_hi_display) if from_hi_display is not None else '—'}</td>
-  <td>{_fmt_pct(rev) if rev else '—'}</td>
-  <td style="color:{MUTED}">{buy_pct_display}</td>
+  <td class="reason">{reason}</td>
+  <td class="num" data-sort-value="{price_sort}">{price}</td>
+  <td class="num {rsi_c}" data-sort-value="{rsi_sort}">{rsi_display}</td>
+  <td class="num {fh_c}" data-sort-value="{fhi_sort}">{fhi_disp}</td>
+  <td class="num pos" data-sort-value="{rev_sort}">{rev_disp}</td>
+  <td class="num muted" data-sort-value="{buy_sort}">{buy_pct_display}</td>
 </tr>"""
 
 
@@ -1182,17 +1694,16 @@ def _backtest_panel(screen_id, backtest_data: dict | None) -> str:
     if backtest_data.get("skipped"):
         reason = backtest_data.get("reason", "")
         reason_html = (
-            f' <span style="color:{MUTED}">— {reason}</span>'
-            if reason else ""
+            f' — <em>{reason}</em>' if reason else ""
         )
         return f"""
-<details class="backtest-panel" style="margin-top:12px">
-  <summary>&#128200; Historical performance (5y walk-forward)</summary>
-  <div style="margin-top:8px;padding:10px;background:{BG};
-              border:1px solid {BORDER};border-radius:6px;
-              color:{MUTED};font-size:12px;line-height:1.5">
-    Historical backtest not available for this screen
-    (requires fundamentals snapshots or non-price data).{reason_html}
+<details class="backtest-panel">
+  <summary>Historical performance · 5y walk-forward</summary>
+  <div style="margin-top:14px;padding-top:14px;border-top:1px dashed {BORDER};
+              color:{MUTED};font-size:13.5px;line-height:1.6;
+              font-family:'Newsreader',serif;font-style:italic;max-width:680px">
+    Historical backtest not available for this screen — requires fundamentals
+    snapshots or non-price data.{reason_html}
   </div>
 </details>"""
 
@@ -1209,20 +1720,20 @@ def _backtest_panel(screen_id, backtest_data: dict | None) -> str:
     # No-data case (zero observations)
     if not n_obs:
         return f"""
-<details class="backtest-panel" style="margin-top:12px">
-  <summary>&#128200; Historical performance (5y walk-forward)</summary>
-  <div style="margin-top:8px;padding:10px;background:{BG};
-              border:1px solid {BORDER};border-radius:6px;
-              color:{MUTED};font-size:12px">
-    Backtest produced no observations over the lookback window
-    (insufficient data or no signals fired).
+<details class="backtest-panel">
+  <summary>Historical performance · 5y walk-forward</summary>
+  <div style="margin-top:14px;padding-top:14px;border-top:1px dashed {BORDER};
+              color:{MUTED};font-size:13.5px;
+              font-family:'Newsreader',serif;font-style:italic;max-width:680px">
+    Backtest produced no observations over the lookback window — insufficient
+    data or no signals fired.
   </div>
 </details>"""
 
-    med_color = GREEN if (med_3m or 0) >= 0 else RED
-    alpha_color = GREEN if (alpha_3m or 0) >= 0 else RED
+    med_color = "pos" if (med_3m or 0) >= 0 else "neg"
+    alpha_color = "pos" if (alpha_3m or 0) >= 0 else "neg"
     sharpe_str = f"{sharpe:.2f}" if isinstance(sharpe, (int, float)) else "—"
-    hit_color = GREEN if (hit_rate or 0) >= 50 else AMBER
+    hit_color = "pos" if (hit_rate or 0) >= 50 else "amber"
     hit_str = f"{hit_rate:.0f}%" if isinstance(hit_rate, (int, float)) else "—"
 
     lookback_label = (
@@ -1231,68 +1742,38 @@ def _backtest_panel(screen_id, backtest_data: dict | None) -> str:
         else "Walk-forward"
     )
 
-    meta_line = (
-        f"<div style='font-size:10px;color:#6e7681;margin-top:8px'>"
-        f"{n_uniq or 0} unique tickers · "
-        f"as of {as_of}</div>"
-    )
-
     return f"""
-<details class="backtest-panel" style="margin-top:12px">
-  <summary>&#128200; Historical performance ({lookback_label})</summary>
-  <div class="backtest-grid"
-       style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
-              margin-top:10px">
-    <div style="background:{BG};padding:8px;border-radius:6px;
-                border:1px solid {BORDER}">
-      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
-                  letter-spacing:.06em;margin-bottom:3px">
-        Median 3m fwd return</div>
-      <div style="font-size:15px;font-weight:700;color:{med_color}">
-        {_fmt_signed_pct(med_3m)}</div>
+<details class="backtest-panel">
+  <summary>Historical performance · {lookback_label}</summary>
+  <div class="backtest-grid">
+    <div>
+      <div class="backtest-cell-label">Median 3m fwd</div>
+      <div class="backtest-cell-val {med_color}">{_fmt_signed_pct(med_3m)}</div>
     </div>
-    <div style="background:{BG};padding:8px;border-radius:6px;
-                border:1px solid {BORDER}">
-      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
-                  letter-spacing:.06em;margin-bottom:3px">
-        vs SPY 3m baseline</div>
-      <div style="font-size:15px;font-weight:700;color:{TEXT}">
-        {_fmt_signed_pct(spy_3m)}</div>
+    <div>
+      <div class="backtest-cell-label">vs SPY 3m</div>
+      <div class="backtest-cell-val">{_fmt_signed_pct(spy_3m)}</div>
     </div>
-    <div style="background:{BG};padding:8px;border-radius:6px;
-                border:1px solid {BORDER}">
-      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
-                  letter-spacing:.06em;margin-bottom:3px">
-        3m alpha</div>
-      <div style="font-size:15px;font-weight:700;color:{alpha_color}">
-        {_fmt_signed_pp(alpha_3m)}</div>
+    <div>
+      <div class="backtest-cell-label">3m alpha</div>
+      <div class="backtest-cell-val {alpha_color}">{_fmt_signed_pp(alpha_3m)}</div>
     </div>
-    <div style="background:{BG};padding:8px;border-radius:6px;
-                border:1px solid {BORDER}">
-      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
-                  letter-spacing:.06em;margin-bottom:3px">
-        Hit rate (beat SPY)</div>
-      <div style="font-size:15px;font-weight:700;color:{hit_color}">
-        {hit_str}</div>
+    <div>
+      <div class="backtest-cell-label">Hit rate</div>
+      <div class="backtest-cell-val {hit_color}">{hit_str}</div>
     </div>
-    <div style="background:{BG};padding:8px;border-radius:6px;
-                border:1px solid {BORDER}">
-      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
-                  letter-spacing:.06em;margin-bottom:3px">
-        Sharpe (3m)</div>
-      <div style="font-size:15px;font-weight:700;color:{TEXT}">
-        {sharpe_str}</div>
+    <div>
+      <div class="backtest-cell-label">Sharpe 3m</div>
+      <div class="backtest-cell-val">{sharpe_str}</div>
     </div>
-    <div style="background:{BG};padding:8px;border-radius:6px;
-                border:1px solid {BORDER}">
-      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
-                  letter-spacing:.06em;margin-bottom:3px">
-        Observations</div>
-      <div style="font-size:15px;font-weight:700;color:{TEXT}">
-        {n_obs:,}</div>
+    <div>
+      <div class="backtest-cell-label">Observations</div>
+      <div class="backtest-cell-val">{n_obs:,}</div>
     </div>
   </div>
-  {meta_line}
+  <div class="ui faint" style="margin-top:10px;font-size:10.5px;letter-spacing:0.04em">
+    {n_uniq or 0} unique tickers · as of {as_of}
+  </div>
 </details>"""
 
 
@@ -1313,39 +1794,54 @@ def _screen_section(
     expl = explainer_html(expl_key, title)
 
     if not candidates:
-        body = f'<div style="color:{MUTED};padding:12px">No candidates this week.</div>'
+        body = f'<div class="faint" style="padding:18px 0;font-style:italic">No candidates surfaced this week.</div>'
     else:
         rows = "".join(
             _candidate_table_row(c, held_tickers) for c in candidates
         )
         body = f"""
-<div style="background:{SURFACE};border:1px solid {BORDER};
-            border-radius:8px;overflow:hidden;margin-top:8px">
-<table>
+<table class="sortable">
   <thead><tr>
-    <th>Ticker</th><th>Reason</th><th>Price</th>
-    <th>RSI</th><th>% off 52wH</th><th>Rev growth</th><th>Buy%</th>
+    <th data-sort>Ticker</th>
+    <th>Reason</th>
+    <th class="num" data-sort>Price</th>
+    <th class="num" data-sort>RSI</th>
+    <th class="num" data-sort>Off 52wH</th>
+    <th class="num" data-sort>Rev Growth</th>
+    <th class="num" data-sort>Buy %</th>
   </tr></thead>
   <tbody>{rows}</tbody>
-</table></div>"""
+</table>"""
 
     citation_html = (
-        f'<div style="font-size:11px;color:#6e7681;margin-bottom:6px">'
-        f'&#128218; {citation}</div>'
+        f'<div class="ui faint" style="font-size:11px;letter-spacing:0.04em;'
+        f'margin:8px 0 12px;font-style:italic">'
+        f'<span class="amber">●</span> &nbsp;{citation}</div>'
         if citation else ""
     )
     desc_html = (
-        f'<div style="font-size:12px;color:{MUTED};margin-bottom:8px">'
+        f'<div style="font-family:\'Newsreader\',serif;font-style:italic;'
+        f'font-size:15px;color:{TEXT_DIM};margin-bottom:10px;max-width:680px">'
         f'{description}</div>'
         if description else ""
+    )
+    n_count = len(candidates)
+    count_pill = (
+        f'<span class="tag amber" style="margin-left:auto">{n_count} '
+        f'name{"s" if n_count != 1 else ""}</span>'
+        if candidates else ""
     )
 
     backtest_html = _backtest_panel(screen_id, backtest_data)
 
     return f"""
-<div class="card" style="margin-bottom:18px">
-  <div style="font-size:16px;font-weight:700;color:{TEXT};margin-bottom:6px">
-    {title}</div>
+<div class="card">
+  <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:4px">
+    <h3 style="font-family:'Newsreader',serif;font-weight:500;font-size:22px;
+               color:{TEXT};letter-spacing:-0.015em;line-height:1.2;margin:0">
+      {title}</h3>
+    {count_pill}
+  </div>
   {desc_html}
   {citation_html}
   {expl}
@@ -1390,25 +1886,33 @@ def _watchlist_section(watchlist: dict, report_date: date,
             prox_html = ""
 
         cards += f"""
-<div class="card" style="margin-bottom:10px">
-  <div style="display:flex;justify-content:space-between;align-items:baseline">
-    <span style="font-size:17px;font-weight:700;color:{TEXT}">{ticker}</span>
-    {prox_html}
+<div class="list-row">
+  <div>
+    <div class="ui faint" style="font-size:9.5px;letter-spacing:0.18em;
+                                    text-transform:uppercase;margin-bottom:6px">
+      Entry · {direction}
+    </div>
+    <div class="mono" style="font-size:20px;font-weight:600;color:{TEXT};
+                              letter-spacing:0.01em">
+      {ticker}
+    </div>
+    <div class="ui" style="font-size:11px;color:{MUTED};margin-top:6px;
+                            letter-spacing:0.02em">
+      Target <strong class="mono amber">{target_str}</strong>
+      &nbsp;&middot;&nbsp; Now <strong class="mono">{price_str}</strong>
+      &nbsp;&nbsp;{prox_html}
+    </div>
   </div>
-  <div style="margin-top:6px;font-size:13px;color:{MUTED}">
-    Current <strong style="color:{TEXT}">{price_str}</strong>
-    &nbsp;&middot;&nbsp;
-    Target <strong style="color:{BLUE_LT}">{target_str}</strong>
-    ({direction})
+  <div class="list-row-body">
+    <p>{note}</p>
   </div>
-  {f'<div style="margin-top:5px;font-size:12px;color:#6e7681">{note}</div>' if note else ''}
 </div>"""
 
     return f"""
-<div class="sec">
-  <div class="sec-title">Watch list — entry targets</div>
+<section id="watchlist" class="sec">
+  {_section_head("06", "Watch", "list", "Personal entry targets. Live prices versus configured levels with proximity flags.")}
   {cards}
-</div>"""
+</section>"""
 
 
 def _pre_ipo_section(pre_ipo: list[dict]) -> str:
@@ -1419,19 +1923,30 @@ def _pre_ipo_section(pre_ipo: list[dict]) -> str:
         name = item.get("name", "?")
         note = item.get("note", "")
         expected = item.get("expected", "")
+        expected_html = (
+            f'<div class="list-row-meta">{expected}</div>' if expected else ""
+        )
         cards += f"""
-<div class="card" style="margin-bottom:8px">
-  <div style="font-weight:700;color:{TEXT}">{name}
-    {f'<span style="font-size:11px;color:{MUTED};margin-left:8px">{expected}</span>' if expected else ''}
+<div class="list-row">
+  <div>
+    <div class="ui faint" style="font-size:9.5px;letter-spacing:0.18em;
+                                    text-transform:uppercase;margin-bottom:6px">Private</div>
+    <div style="font-family:'Newsreader',serif;font-weight:500;font-size:18px;
+                color:{TEXT};letter-spacing:-0.01em">
+      {name}
+    </div>
+    {expected_html}
   </div>
-  {f'<div style="font-size:12px;color:{MUTED};margin-top:4px">{note}</div>' if note else ''}
+  <div class="list-row-body">
+    <p>{note}</p>
+  </div>
 </div>"""
 
     return f"""
-<div class="sec">
-  <div class="sec-title">Pre-IPO watch</div>
+<section id="preipo" class="sec">
+  {_section_head("07", "Pre-IPO", "watch", "Notable private companies tracked manually — informational only, no live data.")}
   {cards}
-</div>"""
+</section>"""
 
 
 def build_weekly_report(
@@ -1464,16 +1979,17 @@ def build_weekly_report(
     """
     rd = report_date or date.today()
     date_str = rd.strftime("%A, %B %d, %Y")
+    short_date = rd.strftime("%b %d, %Y").upper()
     score_val = state_score.get("score", state_score.get("total_score", 0)) or 0
     drivers = state_score.get("drivers", [])
+    regime = state_score.get("regime") or _regime_for(int(score_val))
 
     gauge_div = chart_market_state(int(score_val), drivers)
 
-    # Collect all candidates for 52w range chart
+    # Aggregate candidates for the 52w range chart + stats counts
     all_candidates: list[dict] = []
     for clist in screen_results.values():
         all_candidates.extend(clist)
-    # De-duplicate by ticker
     seen_tickers: set = set()
     unique_candidates: list[dict] = []
     for c in all_candidates:
@@ -1483,40 +1999,78 @@ def build_weekly_report(
             unique_candidates.append(c)
     range_div = chart_52w_range(unique_candidates)
 
-    # ── 1. Header ──────────────────────────────────────────────────────────
-    body = _header("Weekly Market Brief", date_str,
-                   f"Market State Score: {score_val}/100")
+    # ── Compute the masthead stats strip ──────────────────────────────────
+    breadth = state_score.get("breadth", {}) or {}
+    pct_above_200 = breadth.get("pct_above_200dma")
+    n_themes_tracked = len(ranked_themes) if ranked_themes else 0
+    n_candidates = len(unique_candidates)
 
-    # Pulse strip
-    pulse_html = _pulse_strip(state_score)
-    if pulse_html:
-        body += f"""
-<div class="sec">
-  <div class="sec-title">Market pulse</div>
-  {pulse_html}
+    score_class = ("amber" if score_val < 50 else
+                   "green" if score_val >= 70 else "")
+    breadth_class = ""
+    if pct_above_200 is not None:
+        if pct_above_200 >= 60:
+            breadth_class = "green"
+        elif pct_above_200 < 40:
+            breadth_class = "red"
+
+    masthead_stats = f"""
+<div class="masthead-strip">
+  <div class="masthead-stat">
+    <div class="masthead-stat-label">Market State</div>
+    <div class="masthead-stat-val {score_class}">{score_val}<span style="font-size:14px;color:{FAINT}">/100</span></div>
+    <div class="masthead-stat-sub">{regime}</div>
+  </div>
+  <div class="masthead-stat">
+    <div class="masthead-stat-label">Breadth · &gt; 200 DMA</div>
+    <div class="masthead-stat-val {breadth_class}">{f'{pct_above_200:.0f}%' if pct_above_200 is not None else '—'}</div>
+    <div class="masthead-stat-sub">% R1000 above 200-day MA</div>
+  </div>
+  <div class="masthead-stat">
+    <div class="masthead-stat-label">Themes Tracked</div>
+    <div class="masthead-stat-val">{n_themes_tracked}</div>
+    <div class="masthead-stat-sub">Curated baskets ranked</div>
+  </div>
+  <div class="masthead-stat">
+    <div class="masthead-stat-label">Names Surfaced</div>
+    <div class="masthead-stat-val">{n_candidates}</div>
+    <div class="masthead-stat-sub">Unique across 8 screens</div>
+  </div>
 </div>"""
 
-    # Gauge
-    if gauge_div:
-        body += f"""
-<div class="sec">
-  <div class="sec-title">Market state</div>
-  {_chart(gauge_div)}
+    body = f"""
+<div class="masthead">
+  <div class="masthead-kicker">Weekly Brief · {short_date}</div>
+  <h1 class="masthead-title">
+    A read of the market<br>
+    <em>at the close.</em>
+  </h1>
+  <p class="masthead-sub">
+    Market regime, sector rotation, thematic strength, and eight academically-validated
+    candidate screens — synthesized from Russell 1000 prices, FRED macro series, AAII sentiment,
+    and SEC EDGAR Form 4 filings.
+  </p>
+  {masthead_stats}
+</div>"""
+
+    # ── 1. Market State ──────────────────────────────────────────────────
+    body += f"""
+<section id="state" class="sec">
+  {_section_head("01", "Market", "state", "Composite score from nine indicators — breadth, volatility regime, credit, cross-asset ratios.")}
+  {_chart(gauge_div) if gauge_div else ''}
   {explainer_html("market_state_score", "Market State Score")}
-</div>"""
+</section>"""
 
-    # ── 2. Themes ──────────────────────────────────────────────────────────
+    # ── 2. Themes ────────────────────────────────────────────────────────
     body += _theme_section(ranked_themes, emerging_clusters)
 
-    # ── 3. Sector rotation ─────────────────────────────────────────────────
+    # ── 3. Sector rotation ───────────────────────────────────────────────
     body += _sector_section(sector_rotation)
 
-    # ── 4. Screens ─────────────────────────────────────────────────────────
+    # ── 4. Candidate screens ─────────────────────────────────────────────
     if screen_results:
         screens_inner = ""
         for screen_id, candidates in screen_results.items():
-            # Look up by both int and string keys for resilience against
-            # callers that key the dict either way.
             bt = None
             if backtest_results:
                 bt = backtest_results.get(screen_id)
@@ -1532,29 +2086,69 @@ def build_weekly_report(
                 backtest_data=bt,
             )
         body += f"""
-<div class="sec">
-  <div class="sec-title">Candidate screens</div>
+<section id="screens" class="sec">
+  {_section_head("04", "Candidate", "screens", "Eight evidence-tiered screens. Held names annotated. Sort any column. Tables are click-sortable.")}
   {screens_inner}
-</div>"""
+</section>"""
 
-    # 52w range chart (after screens, referencing all candidates)
+    # ── 5. 52-week range overview ─────────────────────────────────────────
     if range_div:
         body += f"""
-<div class="sec">
-  <div class="sec-title">52-week range — all candidates</div>
+<section id="ranges" class="sec">
+  {_section_head("05", "Where they trade", "", "Every surfaced candidate plotted on its 52-week range. Hover to inspect.")}
   {_chart(range_div)}
-</div>"""
+</section>"""
 
-    # ── 5. Watchlist ───────────────────────────────────────────────────────
+    # ── 6. Watchlist ──────────────────────────────────────────────────────
     body += _watchlist_section(watchlist, rd, watch_prices)
 
-    # ── 6. Pre-IPO ─────────────────────────────────────────────────────────
+    # ── 7. Pre-IPO watch ──────────────────────────────────────────────────
     body += _pre_ipo_section(pre_ipo)
 
-    # ── 7. Breadth ─────────────────────────────────────────────────────────
+    # ── 8. Breadth detail ─────────────────────────────────────────────────
     body += _breadth_strip(new_highs_lows)
 
-    # Glossary at the bottom
+    # ── 9. Glossary ───────────────────────────────────────────────────────
     body += glossary_html()
 
-    return _html_shell(f"Weekly Market Brief — {date_str}", body, rd)
+    nav_links = [
+        ("state",     "Market State"),
+        ("themes",    "Themes"),
+        ("sectors",   "Sectors"),
+        ("screens",   "Screens"),
+        ("watchlist", "Watchlist"),
+        ("preipo",    "Pre-IPO"),
+        ("glossary",  "Glossary"),
+    ]
+    nav_meta = f"Score {score_val} · {regime} · {short_date}"
+    return _html_shell(
+        f"Weekly Market Brief — {date_str}", body, rd,
+        nav_links=nav_links, nav_meta=nav_meta,
+    )
+
+
+def _regime_for(score: int) -> str:
+    if score < 35:
+        return "Risk-Off"
+    if score < 50:
+        return "Caution"
+    if score < 70:
+        return "Neutral"
+    return "Risk-On"
+
+
+def _section_head(num: str, title: str, em_word: str = "", lede: str = "") -> str:
+    """Render a section header. If em_word is given, it's set in italic serif."""
+    if em_word:
+        title_html = f'{title} <em>{em_word}</em>'
+    else:
+        title_html = title
+    lede_html = (
+        f'<p class="sec-lede">{lede}</p>' if lede else ""
+    )
+    return f"""
+  <div class="sec-head">
+    <span class="sec-num">/ {num}</span>
+    <h2 class="sec-title">{title_html}</h2>
+  </div>
+  {lede_html}"""
