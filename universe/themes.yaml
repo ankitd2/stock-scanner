@@ -1,0 +1,97 @@
+# Market Intelligence Scanner — Thematic Baskets
+# Updated: 2026-05
+# Used by analytics/themes.py for basket performance + strength scoring
+
+themes:
+  ai_semis_compute:
+    name: "AI Semis & Compute"
+    description: "Semiconductor companies enabling AI training and inference"
+    members: [NVDA, AVGO, AMD, TSM, MU, ARM, MRVL, AMAT, LRCX, KLAC]
+
+  ai_networking_optics:
+    name: "AI Networking & Optics"
+    description: "High-speed networking and optical components for AI datacenters"
+    members: [ANET, CRDO, COHR, LITE, CIEN, ALAB]
+
+  ai_power_cooling:
+    name: "AI Power & Cooling"
+    description: "Power delivery, UPS, and cooling for datacenter AI infrastructure"
+    members: [VRT, ETN, GEV, PWR, HUBB, MOD, CARR, JCI]
+
+  hyperscaler_cloud_sw:
+    name: "Hyperscaler & Cloud SW"
+    description: "Big Tech cloud platforms and enterprise software with AI integration"
+    members: [MSFT, GOOGL, AMZN, META, ORCL, CRM, NOW, SNOW]
+
+  agentic_ai_apps:
+    name: "Agentic AI & Apps"
+    description: "AI-native software platforms and agentic workflow tools"
+    members: [PLTR, APP, MDB, ESTC, HUBS, RDDT, DDOG, NET, S]
+
+  nuclear_utilities_ai:
+    name: "Nuclear & Utilities-to-AI"
+    description: "Nuclear operators and utilities signing AI datacenter power PPAs"
+    members: [CEG, VST, NEE, TLN, BWXT, CCJ, URA, SMR, OKLO, NNE]
+
+  traditional_energy:
+    name: "Traditional Energy"
+    description: "Oil & gas producers and pipeline operators"
+    members: [XOM, CVX, OXY, WMB, EOG, TPL, COP, HES]
+
+  defense_modernization:
+    name: "Defense Modernization"
+    description: "Defense primes + next-gen drone, autonomy, and space defense"
+    members: [LMT, NOC, GD, RTX, KTOS, AVAV, AXON]
+
+  space_economy:
+    name: "Space Economy"
+    description: "Launch vehicles, satellite constellations, and space infrastructure"
+    members: [RKLB, ASTS, PL, LUNR, IRDM]
+
+  glp1_obesity:
+    name: "GLP-1 & Obesity"
+    description: "Weight-loss drug developers and secondary beneficiaries"
+    members: [LLY, NVO, AMGN, VKTX, HIMS, ROIV]
+
+  biotech_innovation:
+    name: "Biotech Innovation"
+    description: "Gene therapy, cell therapy, diagnostics, and med-tech innovation"
+    members: [VRTX, REGN, ISRG, DXCM, ARGX, NTRA, KRYS, SRPT]
+
+  crypto_miners:
+    name: "Crypto-Adjacent & Miners"
+    description: "Crypto exchanges, miners, and treasury companies"
+    members: [COIN, MSTR, HOOD, IREN, MARA, CLSK, GLXY]
+
+  stablecoin_payments:
+    name: "Stablecoin & Payments Rails"
+    description: "Stablecoin infrastructure and payment network operators"
+    members: [CRCL, V, MA, FI, PYPL]
+
+  reshoring_industrial:
+    name: "Reshoring & Industrial Capex"
+    description: "Industrial automation and reshoring capex beneficiaries"
+    members: [CAT, ROK, EMR, PH, ITW, DE, URI]
+
+  physical_ai_robotics:
+    name: "Physical AI & Robotics"
+    description: "Robotics, automation, and physical AI deployment"
+    members: [TSLA, ISRG, TER, SYM, FANUY, ABB]
+
+  robotaxi_av:
+    name: "Robotaxi & Autonomous Vehicles"
+    description: "Autonomous driving platform and robotaxi operators"
+    members: [TSLA, GOOGL, MBLY, AUR, UBER, LYFT]
+
+sector_etfs:
+  - {symbol: XLK, name: "Technology"}
+  - {symbol: XLF, name: "Financials"}
+  - {symbol: XLE, name: "Energy"}
+  - {symbol: XLV, name: "Health Care"}
+  - {symbol: XLI, name: "Industrials"}
+  - {symbol: XLP, name: "Consumer Staples"}
+  - {symbol: XLY, name: "Consumer Discretionary"}
+  - {symbol: XLU, name: "Utilities"}
+  - {symbol: XLB, name: "Materials"}
+  - {symbol: XLRE, name: "Real Estate"}
+  - {symbol: XLC, name: "Communication Services"}
