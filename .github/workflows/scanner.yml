@@ -2,15 +2,32 @@ name: Market Scanner
 
 on:
   schedule:
-    - cron: "30 14 * * 1-5"
-    - cron: "0 21 * * 1"
+    - cron: "0 13 * * 1-5"    # 9:00 AM ET weekdays (pre-market)
+    - cron: "30 20 * * 1-5"   # 4:30 PM ET weekdays (post-close)
+    - cron: "0 21 * * 1"      # 5:00 PM ET Monday (full weekly)
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Scan mode"
+        type: choice
+        options: [daily-pre, daily-post, weekly]
+        default: weekly
+      dry_run:
+        description: "Dry run (skip Discord + Pages deploy)"
+        type: boolean
+        default: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write      # for state.json commit-back
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy-pages.outputs.page_url }}
 
     steps:
       - name: Checkout
@@ -20,6 +37,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -27,12 +45,41 @@ jobs:
       - name: Run scanner
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python scanner.py
+          SCANNER_MODE: ${{ github.event.inputs.mode || '' }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          MODE_FLAG=""
+          if [ -n "${{ github.event.inputs.mode }}" ]; then
+            MODE_FLAG="--mode ${{ github.event.inputs.mode }}"
+          fi
+          python scanner.py $MODE_FLAG $DRY_RUN_FLAG
 
-      - name: Upload report
+      - name: Commit state.json if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "[bot] update state.json [skip ci]"
+          git push || true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+
+      - name: Deploy to GitHub Pages
+        id: deploy-pages
+        uses: actions/deploy-pages@v4
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+
+      - name: Upload report artifact
         uses: actions/upload-artifact@v4
         with:
           name: market-report-${{ github.run_id }}
           path: report.html
-          retention-days: 30
+          retention-days: 7
         if: always()
