@@ -1,0 +1,104 @@
+themes:
+  ai_infrastructure:
+    name: "AI Infrastructure"
+    description: "Data centers, networking, power for AI compute"
+    members: [NVDA, AMD, AVGO, ANET, CRDO, VRT, GEV, APLD, CRWV, ARM, TSM, MU, AMAT, MRVL]
+
+  ai_software:
+    name: "AI Software & Applications"
+    description: "LLM-native apps, copilots, AI-first SaaS"
+    members: [MSFT, GOOGL, META, PLTR, APP, CRM, NOW, SNOW, DDOG, HUBS, ADBE, INTU]
+
+  cloud_security:
+    name: "Cloud Security"
+    description: "SASE, XDR, endpoint, identity security"
+    members: [CRWD, ZS, PANW, NET, AXON]
+
+  cloud_hyperscalers:
+    name: "Cloud Hyperscalers"
+    description: "IaaS/PaaS cloud platforms"
+    members: [MSFT, AMZN, GOOGL, META]
+
+  ecommerce_marketplace:
+    name: "E-Commerce & Marketplace"
+    description: "Online retail and marketplace platforms"
+    members: [AMZN, SHOP, MELI, BKNG, ABNB, UBER, TTD]
+
+  fintech_crypto:
+    name: "Fintech & Crypto"
+    description: "Digital payments, crypto infrastructure, neobanks"
+    members: [COIN, SOFI, PYPL, SQ, HOOD]
+
+  digital_media:
+    name: "Digital Media & Streaming"
+    description: "Streaming, social, digital advertising"
+    members: [NFLX, META, GOOGL, RDDT, SNAP, PINS]
+
+  semiconductors:
+    name: "Semiconductors"
+    description: "Chip design and manufacturing"
+    members: [NVDA, AMD, AVGO, MU, AMAT, MRVL, ARM, TSM, CRDO, ANET]
+
+  defense_space:
+    name: "Defense & Space"
+    description: "Next-gen defense tech, autonomous systems, space"
+    members: [RKLB, KTOS, AXON, GEV, CEG]
+
+  clean_energy:
+    name: "Clean Energy & Power"
+    description: "Nuclear, solar, grid infrastructure"
+    members: [CEG, VST, GEV, ENPH, NEE]
+
+  health_biotech:
+    name: "Health & Biotech"
+    description: "Medtech, digital health, biotech disruptors"
+    members: [ISRG, DXCM, HIMS, VEEV, DDOG]
+
+  enterprise_saas:
+    name: "Enterprise SaaS"
+    description: "Broad enterprise software platforms"
+    members: [NOW, CRM, HUBS, VEEV, INTU, ADBE, SNOW, DDOG, ZS, NET]
+
+  consumer_internet:
+    name: "Consumer Internet"
+    description: "Consumer apps, social, search"
+    members: [GOOGL, META, NFLX, RDDT, SNAP, PINS, UBER, ABNB]
+
+  robotics_automation:
+    name: "Robotics & Automation"
+    description: "Industrial automation, autonomous systems"
+    members: [ISRG, KTOS, AXON, TSLA, ARM]
+
+  quantum_compute:
+    name: "Quantum & Next-Gen Compute"
+    description: "Quantum computing, neuromorphic, HPC"
+    members: [NVDA, AMD, GOOGL, MSFT, IBM]
+
+  data_analytics:
+    name: "Data & Analytics"
+    description: "Data warehousing, BI, observability"
+    members: [SNOW, DDOG, PLTR, MDB, ESTC, SPLK]
+
+sector_etfs:
+  - symbol: XLK
+    name: "Technology"
+  - symbol: XLY
+    name: "Consumer Discretionary"
+  - symbol: XLC
+    name: "Communication Services"
+  - symbol: XLE
+    name: "Energy"
+  - symbol: XLB
+    name: "Materials"
+  - symbol: XLI
+    name: "Industrials"
+  - symbol: XLU
+    name: "Utilities"
+  - symbol: XLP
+    name: "Consumer Staples"
+  - symbol: XLV
+    name: "Health Care"
+  - symbol: XLF
+    name: "Financials"
+  - symbol: XLRE
+    name: "Real Estate"
