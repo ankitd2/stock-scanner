@@ -286,6 +286,36 @@ class TestGetAaiiSentiment(unittest.TestCase):
         self.assertGreater(float(df["bullish"].max()), 1.0)
 
     @patch("data.aaii.requests.get")
+    def test_sends_browser_user_agent(self, mock_get):
+        """AAII's CDN 403s the default requests UA — a browser UA must be sent."""
+        dates = pd.date_range("2024-01-01", periods=3, freq="W-FRI")
+        mock_get.return_value = self._mock_response(
+            bullish=[40, 42, 45],
+            bearish=[30, 28, 25],
+            neutral=[30, 30, 30],
+            dates=dates.strftime("%Y-%m-%d").tolist(),
+        )
+
+        from data.aaii import get_aaii_sentiment
+
+        get_aaii_sentiment()
+
+        self.assertEqual(mock_get.call_count, 1)
+        _args, kwargs = mock_get.call_args
+        self.assertIn("headers", kwargs)
+        headers = kwargs["headers"] or {}
+        # Normalise header keys (HTTP headers are case-insensitive).
+        lowered = {k.lower(): v for k, v in headers.items()}
+        self.assertIn("user-agent", lowered)
+        ua = lowered["user-agent"]
+        self.assertNotIn("python-requests", ua.lower())
+        # Sanity-check that it looks like a real browser UA.
+        self.assertTrue(
+            any(token in ua for token in ("Mozilla", "Chrome", "Safari")),
+            f"User-Agent does not look like a browser: {ua!r}",
+        )
+
+    @patch("data.aaii.requests.get")
     def test_fraction_normalisation(self, mock_get):
         """Values stored as 0-1 fractions should be scaled to 0-100."""
         dates = pd.date_range("2024-01-01", periods=4, freq="W-FRI")
