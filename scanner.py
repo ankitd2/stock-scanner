@@ -258,7 +258,21 @@ def main():
 
     # ── Universe data ──────────────────────────────────────────────────────────
     tickers = get_universe_tickers()
-    print(f"[scanner] universe: {len(tickers)} tickers", flush=True)
+    # Add sector ETFs, SPY/RSP/SPHB/SPLV for theme + sector rotation analysis,
+    # plus watchlist tickers so we can fetch current prices for the report.
+    SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLP", "XLY",
+                   "XLU", "XLB", "XLRE", "XLC"]
+    MARKET_ETFS = ["SPY", "RSP", "SPHB", "SPLV", "QQQ", "IWM"]
+    watch_tickers = list(cfg["watchlist"].keys())
+    extra_tickers = SECTOR_ETFS + MARKET_ETFS + watch_tickers
+    universe_set = set(tickers)
+    for t in extra_tickers:
+        if t not in universe_set:
+            tickers.append(t)
+            universe_set.add(t)
+    print(f"[scanner] universe: {len(tickers)} tickers "
+          f"(+{len(SECTOR_ETFS)} sector ETFs, +{len(MARKET_ETFS)} market ETFs, "
+          f"+{len(watch_tickers)} watchlist)", flush=True)
 
     # Bulk download — all tickers, 1 year history
     print("[scanner] fetching universe history...", flush=True)
@@ -384,6 +398,7 @@ def main():
             screen_meta=SCREEN_META,
             held_tickers=set(cfg["held"]),
             watchlist=cfg["watchlist"],
+            watch_prices=watch_prices,
             pre_ipo=cfg["pre_ipo"],
             new_highs_lows=new_highs_lows,
         )

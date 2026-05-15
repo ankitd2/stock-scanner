@@ -33,6 +33,25 @@ except ImportError:
 from analytics.indicators import compute_all
 
 
+def _scalar(v):
+    """Extract latest scalar from a pandas Series, or return as-is if already scalar."""
+    if v is None:
+        return None
+    if hasattr(v, "iloc"):
+        try:
+            v = v.iloc[-1]
+        except Exception:
+            return None
+    if v is None:
+        return None
+    try:
+        import math
+        f = float(v)
+        return None if math.isnan(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Screen metadata
 # ---------------------------------------------------------------------------
@@ -145,11 +164,15 @@ def _build_candidate(
         "price": price,
         "mcap": info.get("mcap"),
         "rsi": ind.get("latest_rsi"),
-        "pct_from_52wh": ind.get("pct_from_52wh"),
+        "pct_from_52wh": _scalar(ind.get("pct_from_52wh")),
         "rev_growth": info.get("rev_growth"),
         "buy_pct": info.get("buy_pct"),
         "upside_to_pt": upside_to_pt,
         "vol_adj_mom": ind.get("vol_adj_mom"),
+        "hi52": info.get("hi52"),
+        "lo52": info.get("lo52"),
+        "name": info.get("name"),
+        "sector": info.get("sector"),
     }
 
 

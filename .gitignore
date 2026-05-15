@@ -9,3 +9,6 @@ report.html
 .pytest_cache/
 .venv/
 venv/
+.playwright-mcp/
+live-report-full.png
+page-snapshot.md

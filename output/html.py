@@ -148,10 +148,10 @@ def chart_market_state(score: int, drivers: list[dict]) -> str:
     if top_drivers:
         # Reverse so largest |contribution| ends up at the TOP of the chart
         bars = list(reversed(top_drivers))
-        labels = [d.get("label", "?") for d in bars]
+        labels = [d.get("name") or d.get("label", "?") for d in bars]
         vals = [float(d.get("contribution", 0)) for d in bars]
         colors = [GREEN if v >= 0 else RED for v in vals]
-        descs = [d.get("description", "") for d in bars]
+        descs = [d.get("description") or d.get("direction", "") for d in bars]
 
         hover = [
             f"<b>{lbl}</b><br>Contribution: {v:+.2f}"
@@ -1042,12 +1042,18 @@ def _theme_section(ranked_themes: list[dict], emerging_clusters: list[dict]) -> 
     if emerging_clusters:
         cluster_html = f'<div class="sec-title" style="margin-top:20px">Emerging clusters</div>'
         for cl in emerging_clusters:
-            tickers = ", ".join(cl.get("tickers", [])[:6])
+            members = cl.get("members") or cl.get("tickers") or []
+            tickers = ", ".join(str(m) for m in members[:6])
+            label = cl.get("label") or cl.get("theme") or "Unnamed cluster"
+            delta = cl.get("delta")
+            note = cl.get("note")
+            if delta is not None and not note:
+                note = f"Internal correlation rose by {delta:+.2f} over the last 60 days"
             cluster_html += f"""
 <div class="card" style="margin-bottom:8px">
-  <span style="font-weight:700;color:{AMBER}">{cl.get('theme','?')}</span>
+  <span style="font-weight:700;color:{AMBER}">{label}</span>
   <span style="font-size:12px;color:{MUTED};margin-left:10px">{tickers}</span>
-  {f'<div style="font-size:11px;color:#6e7681;margin-top:4px">{cl.get("note","")}</div>' if cl.get('note') else ''}
+  {f'<div style="font-size:11px;color:#6e7681;margin-top:4px">{note}</div>' if note else ''}
 </div>"""
 
     return f"""
@@ -1096,23 +1102,31 @@ def _candidate_table_row(c: dict, held_tickers: set) -> str:
     price = _fmt_price(c.get("price"))
     rsi = c.get("rsi")
     rsi_c = RED if (rsi or 0) > 75 else (GREEN if (rsi or 0) < 35 else TEXT)
-    from_hi = c.get("from_hi")
-    fh_c = GREEN if from_hi and 10 <= from_hi <= 40 else AMBER
+    # screens.py stores it as pct_from_52wh (negative value: 0 = at high, -10 = 10% below)
+    # Older API used "from_hi" (positive value: 10 = 10% below)
+    pct_from_52wh = c.get("pct_from_52wh")
+    if pct_from_52wh is not None:
+        from_hi_display = abs(pct_from_52wh)  # convert to positive for display
+    else:
+        from_hi_display = c.get("from_hi")
+    fh_c = GREEN if from_hi_display and 10 <= from_hi_display <= 40 else AMBER
     rev = c.get("rev_growth")
     buy_pct = c.get("buy_pct")
     reason = c.get("reason", c.get("verdict", ""))
+    rsi_display = f"{rsi:.0f}" if isinstance(rsi, (int, float)) else "—"
+    buy_pct_display = f"{buy_pct:.0f}%" if isinstance(buy_pct, (int, float)) else "—"
 
     return f"""<tr>
   <td>
     <span style="font-weight:700;color:{TEXT}">{ticker}</span>{held_badge}
     <div style="font-size:11px;color:{MUTED}">{name[:22]}</div>
   </td>
-  <td style="font-size:11px;color:{MUTED}">{reason[:40]}</td>
+  <td style="font-size:11px;color:{MUTED}">{reason[:60]}</td>
   <td style="font-weight:700">{price}</td>
-  <td style="color:{rsi_c}">{rsi if rsi else '—'}</td>
-  <td style="color:{fh_c}">{_fmt_pct(from_hi) if from_hi else '—'}</td>
+  <td style="color:{rsi_c}">{rsi_display}</td>
+  <td style="color:{fh_c}">{_fmt_pct(from_hi_display) if from_hi_display is not None else '—'}</td>
   <td>{_fmt_pct(rev) if rev else '—'}</td>
-  <td style="color:{MUTED}">{f'{buy_pct}%' if buy_pct else '—'}</td>
+  <td style="color:{MUTED}">{buy_pct_display}</td>
 </tr>"""
 
 
@@ -1182,22 +1196,24 @@ def _screen_section(
 </div>"""
 
 
-def _watchlist_section(watchlist: dict, report_date: date) -> str:
+def _watchlist_section(watchlist: dict, report_date: date,
+                        watch_prices: dict | None = None) -> str:
     if not watchlist:
         return ""
     today = report_date or date.today()
+    watch_prices = watch_prices or {}
     cards = ""
     for ticker, cfg in watchlist.items():
         if isinstance(cfg, dict):
             target = cfg.get("buy_at")
             direction = cfg.get("direction", "below")
             note = cfg.get("note", "")
-            price = cfg.get("current_price")  # may not be present
+            price = watch_prices.get(ticker) or cfg.get("current_price")
         else:
             target = cfg
             direction = "below"
             note = ""
-            price = None
+            price = watch_prices.get(ticker)
 
         target_str = _fmt_price(target)
         price_str = _fmt_price(price) if price else "—"
@@ -1272,6 +1288,7 @@ def build_weekly_report(
     pre_ipo: list[dict],
     new_highs_lows: dict,
     report_date: date = None,
+    watch_prices: dict | None = None,
 ) -> str:
     """
     Generates the full weekly report (~5 sections):
@@ -1357,7 +1374,7 @@ def build_weekly_report(
 </div>"""
 
     # ── 5. Watchlist ───────────────────────────────────────────────────────
-    body += _watchlist_section(watchlist, rd)
+    body += _watchlist_section(watchlist, rd, watch_prices)
 
     # ── 6. Pre-IPO ─────────────────────────────────────────────────────────
     body += _pre_ipo_section(pre_ipo)
