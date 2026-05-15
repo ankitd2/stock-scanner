@@ -1,5 +1,5 @@
 {
-  "portfolio": [
+  "held": [
     "META", "NVDA", "VTI", "VRT", "MU",
     "MSFT", "AMZN", "CRWD", "ANET", "AAPL", "APP"
   ],
@@ -27,11 +27,14 @@
     }
   },
 
+  "pre_ipo": [
+    {"name": "Cerebras", "note": "S-1 filed, AI chip, direct NVIDIA competitor"},
+    {"name": "Databricks", "note": "Data + AI platform, ~$62B last valuation"},
+    {"name": "Anthropic", "note": "LLM lab, Claude models"},
+    {"name": "Stripe", "note": "Payments infra, ~$70B last valuation"},
+    {"name": "SpaceX", "note": "Launch + Starlink, IPO rumored H2 2026"}
+  ],
+
   "alert_move_pct": 5.0,
-
-  "weekly_scan_weekday": 0,
-
-  "run_screener_daily": false,
-
   "discord_webhook": ""
 }
