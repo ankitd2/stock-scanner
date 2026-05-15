@@ -155,7 +155,6 @@ def _parse_recommendations(t: "yf.Ticker") -> tuple[int, int, int, float]:
             return 0, 0, 0, 0.0
         recs = recs.tail(30)
 
-        buy_col = None
         # Modern yfinance: columns like strongBuy, buy, hold, sell, strongSell
         modern_cols = {"strongBuy", "buy", "hold", "sell", "strongSell"}
         if modern_cols.issubset(set(recs.columns)):
