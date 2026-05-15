@@ -1,7 +1,8 @@
 """
 HTML report generator for the market intelligence scanner.
-Produces dark-theme (0d1117) newsletter-style reports with embedded
-base64 matplotlib charts. No external CSS/JS dependencies.
+Produces dark-theme (#0d1117) newsletter-style reports with embedded
+interactive Plotly charts. The Plotly JS library is loaded once via
+CDN at the top of each report (so individual chart divs stay small).
 
 Exports:
     build_daily_report(...)  -> str
@@ -13,19 +14,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import base64
-import io
 import json
 from datetime import date, datetime
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import matplotlib.ticker as mticker
-import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from output.explainers import EXPLAINERS, explainer_html, glossary_html
+
+# Plotly.js CDN — loaded once per report. Charts emit only their <div>.
+PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js"
 
 # ── Colour palette (matches scanner.py) ────────────────────────────────────
 BG      = "#0d1117"
@@ -39,332 +37,572 @@ RED     = "#ff7b72"
 TEXT    = "#e6edf3"
 MUTED   = "#8b949e"
 
-# ── Matplotlib helpers ──────────────────────────────────────────────────────
+# ── Plotly helpers ───────────────────────────────────────────────────────────
 
-def _apply_dark(fig, ax_or_axes):
-    """Apply consistent dark styling to a figure and its axes."""
-    fig.patch.set_facecolor(BG)
-    axes = ax_or_axes if isinstance(ax_or_axes, (list, np.ndarray)) else [ax_or_axes]
-    for ax in np.array(axes).ravel():
-        ax.set_facecolor(BG)
-        ax.tick_params(colors=MUTED, labelsize=8)
-        ax.spines[:].set_visible(False)
-        for spine in ax.spines.values():
-            spine.set_edgecolor(BORDER)
+_DARK_LAYOUT = dict(
+    paper_bgcolor=BG,
+    plot_bgcolor=SURFACE,
+    font=dict(
+        family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif',
+        color=TEXT,
+        size=12,
+    ),
+    margin=dict(l=10, r=10, t=40, b=30),
+    hoverlabel=dict(bgcolor=SURFACE, bordercolor=BORDER, font=dict(color=TEXT)),
+)
 
 
-def fig_to_b64(fig) -> str:
-    """Convert a matplotlib Figure to a base64 PNG string for HTML embedding."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight",
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode()
+def fig_to_html(fig) -> str:
+    """Convert a Plotly Figure to a self-contained HTML div.
+
+    The plotly.js library is *not* embedded — it is loaded once via a
+    <script src=...> tag at the top of the report.
+    """
+    return fig.to_html(
+        include_plotlyjs=False,
+        full_html=False,
+        config={"displayModeBar": False, "responsive": True},
+        div_id=None,
+    )
 
 
 # ── Chart: market state gauge + driver bars ─────────────────────────────────
 
 def chart_market_state(score: int, drivers: list[dict]) -> str:
     """
-    Two-panel figure:
-      Left  — semicircular gauge showing the 0-100 market state score.
-      Right — horizontal bar chart of the top 6 driver contributions.
+    Two-panel interactive Plotly figure:
+      Top    — Indicator gauge (0-100) for the Market State Score.
+      Bottom — Horizontal bar chart of the top 6 drivers by |contribution|.
 
     Args:
         score:   Integer 0-100.
         drivers: List of dicts with keys 'label' and 'contribution' (float).
+                 Optional key 'description' is surfaced in the hover.
 
     Returns:
-        base64 PNG string.
+        Plotly HTML div string (no full <html> wrapper, no plotly.js).
     """
-    plt.style.use("dark_background")
-
-    # Pick score colour
+    # Score colour and regime label
     if score < 35:
-        score_color = RED
+        score_color, regime = RED, "Risk-Off"
     elif score < 50:
-        score_color = AMBER
+        score_color, regime = AMBER, "Caution"
     elif score < 70:
-        score_color = "#e3b341"   # yellow
+        score_color, regime = "#d8a657", "Neutral"
     else:
-        score_color = GREEN
+        score_color, regime = GREEN, "Risk-On"
 
-    fig, (ax_gauge, ax_bars) = plt.subplots(
-        1, 2,
-        figsize=(10, 3.8),
-        gridspec_kw={"width_ratios": [1, 1.6]},
+    top_drivers = sorted(
+        drivers or [], key=lambda d: abs(d.get("contribution", 0)), reverse=True
+    )[:6]
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        row_heights=[0.55, 0.45],
+        vertical_spacing=0.18,
+        specs=[[{"type": "indicator"}], [{"type": "xy"}]],
+        subplot_titles=("", "Driver contributions"),
     )
-    _apply_dark(fig, [ax_gauge, ax_bars])
 
-    # ── Gauge (semicircle) ──────────────────────────────────────────────────
-    ax_gauge.set_xlim(-1.2, 1.2)
-    ax_gauge.set_ylim(-0.25, 1.15)
-    ax_gauge.set_aspect("equal")
-    ax_gauge.axis("off")
+    # ── Gauge ──
+    fig.add_trace(
+        go.Indicator(
+            mode="gauge+number",
+            value=int(score),
+            number=dict(font=dict(color=score_color, size=42)),
+            title=dict(
+                text=f"<span style='font-size:11px;color:{MUTED}'>"
+                     f"Market State · {regime}</span>",
+                font=dict(color=MUTED, size=12),
+            ),
+            gauge=dict(
+                axis=dict(
+                    range=[0, 100],
+                    tickwidth=1,
+                    tickcolor=BORDER,
+                    tickfont=dict(color=MUTED, size=10),
+                    tickvals=[0, 35, 50, 70, 100],
+                ),
+                bar=dict(color=score_color, thickness=0.28),
+                bgcolor=SURFACE,
+                borderwidth=0,
+                steps=[
+                    dict(range=[0, 35],  color="rgba(248, 81, 73, 0.18)"),
+                    dict(range=[35, 50], color="rgba(210, 153, 34, 0.18)"),
+                    dict(range=[50, 70], color="rgba(216, 166, 87, 0.18)"),
+                    dict(range=[70, 100], color="rgba(86, 211, 100, 0.18)"),
+                ],
+                threshold=dict(
+                    line=dict(color=TEXT, width=2),
+                    thickness=0.75,
+                    value=int(score),
+                ),
+            ),
+        ),
+        row=1,
+        col=1,
+    )
 
-    # Background arc (full 180°)
-    theta_bg = np.linspace(np.pi, 0, 200)
-    ax_gauge.plot(np.cos(theta_bg), np.sin(theta_bg),
-                  color=SURFACE, linewidth=22, solid_capstyle="butt", zorder=1)
-
-    # Filled arc — score/100 of the semicircle
-    frac = max(0, min(1, score / 100))
-    theta_fill = np.linspace(np.pi, np.pi - frac * np.pi, 200)
-    ax_gauge.plot(np.cos(theta_fill), np.sin(theta_fill),
-                  color=score_color, linewidth=22, solid_capstyle="butt", zorder=2)
-
-    # Zone tick marks at 35, 50, 70
-    for zone in (0.35, 0.50, 0.70):
-        angle = np.pi - zone * np.pi
-        ax_gauge.plot(
-            [0.78 * np.cos(angle), 0.94 * np.cos(angle)],
-            [0.78 * np.sin(angle), 0.94 * np.sin(angle)],
-            color=BORDER, linewidth=1.5, zorder=3,
-        )
-
-    # Score text in centre
-    ax_gauge.text(0, 0.25, str(score), ha="center", va="center",
-                  fontsize=38, fontweight="700", color=score_color, zorder=4)
-
-    # Regime label
-    if score < 35:
-        regime = "Risk-Off"
-    elif score < 50:
-        regime = "Caution"
-    elif score < 70:
-        regime = "Neutral"
-    else:
-        regime = "Risk-On"
-    ax_gauge.text(0, -0.05, regime, ha="center", va="center",
-                  fontsize=11, color=MUTED, zorder=4)
-    ax_gauge.text(0, 1.08, "Market State", ha="center", va="center",
-                  fontsize=9, color=MUTED, zorder=4)
-
-    # Zone labels
-    for val, label in ((0, "0"), (35, "35"), (50, "50"), (70, "70"), (100, "100")):
-        angle = np.pi - (val / 100) * np.pi
-        r = 1.12
-        ax_gauge.text(r * np.cos(angle), r * np.sin(angle), label,
-                      ha="center", va="center", fontsize=7, color=MUTED)
-
-    # ── Driver bars ─────────────────────────────────────────────────────────
-    top_drivers = sorted(drivers, key=lambda d: abs(d.get("contribution", 0)),
-                         reverse=True)[:6]
-    if not top_drivers:
-        ax_bars.axis("off")
-        ax_bars.text(0.5, 0.5, "No driver data", ha="center", va="center",
-                     color=MUTED, fontsize=9, transform=ax_bars.transAxes)
-    else:
-        labels = [d.get("label", "?")[:28] for d in top_drivers]
-        vals = [float(d.get("contribution", 0)) for d in top_drivers]
+    # ── Driver bars ──
+    if top_drivers:
+        # Reverse so largest |contribution| ends up at the TOP of the chart
+        bars = list(reversed(top_drivers))
+        labels = [d.get("label", "?") for d in bars]
+        vals = [float(d.get("contribution", 0)) for d in bars]
         colors = [GREEN if v >= 0 else RED for v in vals]
-        y = np.arange(len(labels))
+        descs = [d.get("description", "") for d in bars]
 
-        ax_bars.barh(y, vals, color=colors, height=0.55,
-                     edgecolor="none", zorder=2)
-        ax_bars.axvline(0, color=BORDER, linewidth=0.8, zorder=3)
-        ax_bars.set_yticks(y)
-        ax_bars.set_yticklabels(labels, color=TEXT, fontsize=9)
-        ax_bars.tick_params(axis="x", colors=MUTED, labelsize=8)
-        ax_bars.invert_yaxis()
-        ax_bars.set_title("Driver contributions", color=MUTED,
-                          fontsize=9, pad=6)
+        hover = [
+            f"<b>{lbl}</b><br>Contribution: {v:+.2f}"
+            + (f"<br>{desc}" if desc else "")
+            for lbl, v, desc in zip(labels, vals, descs)
+        ]
 
-    fig.tight_layout(pad=1.2)
-    return fig_to_b64(fig)
+        fig.add_trace(
+            go.Bar(
+                x=vals,
+                y=labels,
+                orientation="h",
+                marker=dict(color=colors, line=dict(width=0)),
+                hovertemplate="%{customdata}<extra></extra>",
+                customdata=hover,
+                showlegend=False,
+            ),
+            row=2,
+            col=1,
+        )
+        fig.update_xaxes(
+            showgrid=True,
+            gridcolor=BORDER,
+            zerolinecolor=BORDER,
+            zerolinewidth=1,
+            tickfont=dict(color=MUTED, size=10),
+            row=2,
+            col=1,
+        )
+        fig.update_yaxes(
+            tickfont=dict(color=TEXT, size=11),
+            automargin=True,
+            row=2,
+            col=1,
+        )
+    else:
+        fig.add_annotation(
+            text="No driver data",
+            xref="x2",
+            yref="y2",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(color=MUTED, size=11),
+            row=2,
+            col=1,
+        )
+        fig.update_xaxes(visible=False, row=2, col=1)
+        fig.update_yaxes(visible=False, row=2, col=1)
+
+    fig.update_layout(
+        **_DARK_LAYOUT,
+        height=520,
+        showlegend=False,
+    )
+    # Sub-plot title styling
+    for ann in fig.layout.annotations:
+        if ann.text == "Driver contributions":
+            ann.font = dict(color=MUTED, size=11)
+    return fig_to_html(fig)
 
 
 # ── Chart: sector rotation ───────────────────────────────────────────────────
 
+def _sector_score(d: dict) -> float:
+    """Return the canonical rank score (prefers rank_score, falls back to score)."""
+    v = d.get("rank_score", d.get("score"))
+    return float(v) if v is not None else 0.0
+
+
 def chart_sector_rotation(sector_data: list[dict]) -> str:
     """
-    Horizontal bar chart of sectors ranked by Faber score (or relative strength).
+    Horizontal bar chart of sectors ranked by rank_score (or score).
 
-    Each dict in sector_data should have keys:
-        name        str   — sector name (may be abbreviated)
-        score       float — Faber/RS score
-        rank_delta  int   — change in rank vs prior period (positive = improved)
+    Each dict can have:
+        symbol/name     str   — sector identifier / label
+        rank_score      float — composite RS score (preferred)
+        score           float — fallback if rank_score absent
+        rs_3m, rs_6m    float — surfaced in hover
+        ytd_return      float — surfaced in hover
+        rank_delta      int   — rendered as ▲n / ▼n / = next to bar
 
     Returns:
-        base64 PNG string.
+        Plotly HTML div string.
     """
-    plt.style.use("dark_background")
-
     if not sector_data:
-        fig, ax = plt.subplots(figsize=(8, 2))
-        _apply_dark(fig, ax)
-        ax.text(0.5, 0.5, "No sector data available",
-                ha="center", va="center", color=MUTED, fontsize=9,
-                transform=ax.transAxes)
-        fig.tight_layout()
-        return fig_to_b64(fig)
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No sector data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(color=MUTED, size=12),
+        )
+        fig.update_layout(**_DARK_LAYOUT, height=180,
+                          xaxis=dict(visible=False), yaxis=dict(visible=False))
+        return fig_to_html(fig)
 
-    # Sort by score descending
-    data = sorted(sector_data, key=lambda d: d.get("score", 0), reverse=True)
+    # Sort ascending so highest score is at TOP in horizontal layout
+    data = sorted(sector_data, key=_sector_score)
     n = len(data)
-    labels = [d.get("name", "?")[:22] for d in data]
-    scores = [float(d.get("score", 0)) for d in data]
-    deltas = [int(d.get("rank_delta", 0)) for d in data]
+
+    symbols = [d.get("symbol", "") for d in data]
+    names = [d.get("name", d.get("symbol", "?")) for d in data]
+    labels = [
+        f"{s} · {nm}" if s and nm and s != nm else (nm or s or "?")
+        for s, nm in zip(symbols, names)
+    ]
+    scores = [_sector_score(d) for d in data]
+    deltas = [int(d.get("rank_delta", 0) or 0) for d in data]
     colors = [GREEN if s >= 0 else RED for s in scores]
 
-    fig, ax = plt.subplots(figsize=(9, max(3, n * 0.55 + 0.8)))
-    _apply_dark(fig, ax)
-    ax.set_facecolor(BG)
+    def _fmt_opt(v, suffix=""):
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v):+.2f}{suffix}"
+        except (TypeError, ValueError):
+            return str(v)
 
-    y = np.arange(n)
-    ax.barh(y, scores, color=colors, height=0.55, edgecolor="none", zorder=2)
-    ax.axvline(0, color=BORDER, linewidth=0.8, zorder=3)
+    hover = []
+    for d, lbl, sc in zip(data, labels, scores):
+        rs3 = _fmt_opt(d.get("rs_3m"))
+        rs6 = _fmt_opt(d.get("rs_6m"))
+        ytd = _fmt_opt(d.get("ytd_return"))
+        rd = d.get("rank_delta")
+        rd_str = (f"+{rd}" if rd and rd > 0 else (str(rd) if rd else "0"))
+        hover.append(
+            f"<b>{lbl}</b><br>"
+            f"Rank score: {sc:+.2f}<br>"
+            f"RS 3m: {rs3}<br>"
+            f"RS 6m: {rs6}<br>"
+            f"YTD return: {ytd}<br>"
+            f"Rank Δ: {rd_str}"
+        )
 
-    # Rank delta arrows on the right
-    for i, (delta, score) in enumerate(zip(deltas, scores)):
-        if delta > 0:
-            arrow = f"▲{abs(delta)}"
-            ac = GREEN
-        elif delta < 0:
-            arrow = f"▼{abs(delta)}"
-            ac = RED
-        else:
-            arrow = "–"
-            ac = MUTED
-        # Place the arrow just past the bar
-        x_pos = score + (max(scores) - min(scores)) * 0.02 if scores else 0.5
-        ax.text(x_pos, i, f" {arrow}", ha="left", va="center",
-                fontsize=9, color=ac, zorder=4)
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=scores,
+            y=labels,
+            orientation="h",
+            marker=dict(color=colors, line=dict(width=0)),
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hover,
+            showlegend=False,
+        )
+    )
 
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels, color=TEXT, fontsize=9.5, fontweight="600")
-    ax.tick_params(axis="x", colors=MUTED, labelsize=8)
-    ax.invert_yaxis()
-    ax.set_title("Sector Rotation — Ranked by Relative Strength",
-                 color=MUTED, fontsize=10, pad=8)
-    fig.tight_layout(pad=1.2)
-    return fig_to_b64(fig)
+    # Rank-delta annotations at bar end
+    if scores:
+        rng = (max(scores) - min(scores)) or 1.0
+        offset = rng * 0.03
+        for i, (sc, delta) in enumerate(zip(scores, deltas)):
+            if delta > 0:
+                txt, col = f"▲{delta}", GREEN
+            elif delta < 0:
+                txt, col = f"▼{abs(delta)}", RED
+            else:
+                txt, col = "=", MUTED
+            x_pos = sc + (offset if sc >= 0 else -offset)
+            anchor = "left" if sc >= 0 else "right"
+            fig.add_annotation(
+                x=x_pos,
+                y=labels[i],
+                text=txt,
+                showarrow=False,
+                font=dict(color=col, size=11),
+                xanchor=anchor,
+                yanchor="middle",
+            )
+
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor=BORDER,
+        zeroline=True,
+        zerolinecolor=BORDER,
+        zerolinewidth=1,
+        tickfont=dict(color=MUTED, size=10),
+    )
+    fig.update_yaxes(
+        tickfont=dict(color=TEXT, size=11),
+        automargin=True,
+    )
+    fig.update_layout(
+        **_DARK_LAYOUT,
+        title=dict(
+            text="Sector Rotation — Ranked by Relative Strength",
+            font=dict(color=MUTED, size=12),
+            x=0.02,
+        ),
+        height=max(220, n * 34 + 80),
+        bargap=0.35,
+    )
+    return fig_to_html(fig)
 
 
 # ── Chart: theme heatmap ─────────────────────────────────────────────────────
 
 def chart_theme_heatmap(ranked_themes: list[dict]) -> str:
     """
-    Horizontal bar chart of all themes sorted by theme_score (z-scored).
-    Top third coloured green, middle yellow, bottom red.
+    Horizontal bars showing all themes by theme_score (z-scored).
 
-    Each dict should have keys:
-        name         str   — theme name
-        theme_score  float — z-scored score (may be negative)
+    Colouring: top 5 green, middle yellow, bottom red.
+    Hover surfaces description, all 6 components, and a truncated member list.
 
     Returns:
-        base64 PNG string.
+        Plotly HTML div string.
     """
-    plt.style.use("dark_background")
-
     if not ranked_themes:
-        fig, ax = plt.subplots(figsize=(8, 2))
-        _apply_dark(fig, ax)
-        ax.text(0.5, 0.5, "No theme data available",
-                ha="center", va="center", color=MUTED, fontsize=9,
-                transform=ax.transAxes)
-        fig.tight_layout()
-        return fig_to_b64(fig)
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No theme data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(color=MUTED, size=12),
+        )
+        fig.update_layout(**_DARK_LAYOUT, height=180,
+                          xaxis=dict(visible=False), yaxis=dict(visible=False))
+        return fig_to_html(fig)
 
-    data = sorted(ranked_themes, key=lambda d: d.get("theme_score", 0), reverse=True)
+    # Ascending sort so top scorers appear at TOP in horizontal layout
+    data = sorted(ranked_themes, key=lambda d: float(d.get("theme_score", 0) or 0))
     n = len(data)
-    labels = [d.get("name", "?")[:30] for d in data]
-    scores = [float(d.get("theme_score", 0)) for d in data]
+    labels = [d.get("name", "?") for d in data]
+    scores = [float(d.get("theme_score", 0) or 0) for d in data]
 
-    # Colour tiers
-    third = max(1, n // 3)
-    colors = (
-        [GREEN] * third
-        + ["#e3b341"] * (n - 2 * third)
-        + [RED] * third
+    # Tier colours: top 5 green, bottom 5 red, middle yellow.
+    # data is ascending, so the LAST 5 are the top tier.
+    colors = [MUTED] * n
+    top_n = min(5, n)
+    bot_n = min(5, max(0, n - top_n))
+    for i in range(n):
+        if i >= n - top_n:
+            colors[i] = GREEN
+        elif i < bot_n:
+            colors[i] = RED
+        else:
+            colors[i] = "#d8a657"  # yellow
+
+    hover = []
+    for d in data:
+        desc = d.get("description", "")
+        members = d.get("members") or d.get("available_members") or []
+        member_str = ", ".join(str(m) for m in members[:5])
+        if len(members) > 5:
+            member_str += f", … (+{len(members) - 5})"
+
+        components = d.get("components") or {}
+        comp_lines = []
+        # Show up to 6 components (the spec's "all 6 components")
+        for k, v in list(components.items())[:6]:
+            if isinstance(v, (int, float)):
+                comp_lines.append(f"{k}: {v:+.2f}")
+            else:
+                comp_lines.append(f"{k}: {v}")
+        comp_str = "<br>".join(comp_lines)
+
+        parts = [f"<b>{d.get('name', '?')}</b>"]
+        if desc:
+            parts.append(f"<i>{desc}</i>")
+        parts.append(f"Theme score: {float(d.get('theme_score', 0) or 0):+.2f}")
+        if comp_str:
+            parts.append(comp_str)
+        if member_str:
+            parts.append(f"Members: {member_str}")
+        hover.append("<br>".join(parts))
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=scores,
+            y=labels,
+            orientation="h",
+            marker=dict(color=colors, line=dict(width=0)),
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hover,
+            showlegend=False,
+        )
     )
-    # Trim to n if rounding makes it longer
-    colors = colors[:n]
-    while len(colors) < n:
-        colors.append(MUTED)
-
-    fig, ax = plt.subplots(figsize=(9, max(3, n * 0.52 + 0.8)))
-    _apply_dark(fig, ax)
-
-    y = np.arange(n)
-    ax.barh(y, scores, color=colors, height=0.55, edgecolor="none", zorder=2)
-    ax.axvline(0, color=BORDER, linewidth=0.8, zorder=3)
-
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels, color=TEXT, fontsize=9.5)
-    ax.tick_params(axis="x", colors=MUTED, labelsize=8)
-    ax.invert_yaxis()
-    ax.set_title("Theme Heatmap — Sorted by Relative Strength Score",
-                 color=MUTED, fontsize=10, pad=8)
-    ax.set_xlabel("Theme score (z-scored)", color=MUTED, fontsize=8)
-    fig.tight_layout(pad=1.2)
-    return fig_to_b64(fig)
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor=BORDER,
+        zeroline=True,
+        zerolinecolor=BORDER,
+        zerolinewidth=1,
+        tickfont=dict(color=MUTED, size=10),
+        title=dict(
+            text="Theme score (z-scored)",
+            font=dict(color=MUTED, size=10),
+        ),
+    )
+    fig.update_yaxes(
+        tickfont=dict(color=TEXT, size=11),
+        automargin=True,
+    )
+    fig.update_layout(
+        **_DARK_LAYOUT,
+        title=dict(
+            text="Theme Heatmap — Sorted by Relative Strength Score",
+            font=dict(color=MUTED, size=12),
+            x=0.02,
+        ),
+        height=max(240, n * 32 + 100),
+        bargap=0.35,
+    )
+    return fig_to_html(fig)
 
 
 # ── Chart: 52-week range ─────────────────────────────────────────────────────
 
 def chart_52w_range(candidates: list[dict]) -> str:
     """
-    Horizontal range bars for the top ~15 candidates.
-    Each dict needs: ticker, lo52, hi52, price.
+    Horizontal range bars showing [lo52, hi52] for up to 15 candidates,
+    with the current price drawn as a marker dot on the range.
+
+    Each dict needs: ticker, lo52, hi52, price; optional: name.
 
     Returns:
-        base64 PNG string.
+        Plotly HTML div string.
     """
-    plt.style.use("dark_background")
-
     items = [
-        (s["ticker"], s["lo52"], s["hi52"], s["price"])
-        for s in candidates[:15]
-        if s.get("lo52") and s.get("hi52") and s.get("price")
+        c for c in (candidates or [])[:15]
+        if c.get("lo52") and c.get("hi52") and c.get("price")
     ]
     if not items:
-        fig, ax = plt.subplots(figsize=(8, 2))
-        _apply_dark(fig, ax)
-        ax.text(0.5, 0.5, "No range data available",
-                ha="center", va="center", color=MUTED, fontsize=9,
-                transform=ax.transAxes)
-        fig.tight_layout()
-        return fig_to_b64(fig)
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No range data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(color=MUTED, size=12),
+        )
+        fig.update_layout(**_DARK_LAYOUT, height=180,
+                          xaxis=dict(visible=False), yaxis=dict(visible=False))
+        return fig_to_html(fig)
 
-    n = len(items)
-    fig, ax = plt.subplots(figsize=(9, max(3, n * 0.58)))
-    _apply_dark(fig, ax)
+    # Reverse so first candidate is at TOP in horizontal layout
+    items_ord = list(reversed(items))
+    tickers = [c["ticker"] for c in items_ord]
+    lo = [float(c["lo52"]) for c in items_ord]
+    hi = [float(c["hi52"]) for c in items_ord]
+    price = [float(c["price"]) for c in items_ord]
+    names = [c.get("name", "") for c in items_ord]
 
-    for i, (ticker, lo, hi, curr) in enumerate(items):
-        span = hi - lo if hi != lo else 1.0
-        ax.barh(i, span, left=lo, height=0.45, color=SURFACE, zorder=2)
-        ax.barh(i, curr - lo, left=lo, height=0.45, color=BLUE, alpha=0.75, zorder=3)
-        ax.plot(curr, i, "|", color=BLUE_LT, markersize=16,
-                markeredgewidth=2.5, zorder=5)
-        ax.text(lo - span * 0.01, i, f"${lo:,.0f}",
-                ha="right", va="center", fontsize=7.5, color=MUTED)
-        ax.text(hi + span * 0.01, i, f"${hi:,.0f}",
-                ha="left", va="center", fontsize=7.5, color=MUTED)
-        ax.text(curr, i + 0.30, f"${curr:,.2f}",
-                ha="center", va="bottom", fontsize=8,
-                color=BLUE_LT, fontweight="bold")
+    range_hover = []
+    for c, t, l, h, p, nm in zip(items_ord, tickers, lo, hi, price, names):
+        span = (h - l) if h != l else 1.0
+        from_hi = (p - h) / h * 100 if h else 0.0
+        from_lo = (p - l) / l * 100 if l else 0.0
+        range_hover.append(
+            f"<b>{t}</b>"
+            + (f" — {nm}" if nm else "")
+            + f"<br>Price: ${p:,.2f}"
+            + f"<br>52w high: ${h:,.2f}"
+            + f"<br>52w low:  ${l:,.2f}"
+            + f"<br>From high: {from_hi:+.1f}%"
+            + f"<br>From low:  {from_lo:+.1f}%"
+        )
 
-    ax.set_yticks(range(n))
-    ax.set_yticklabels([t for t, *_ in items], color=TEXT,
-                       fontsize=11, fontweight="bold")
-    ax.tick_params(axis="x", colors=MUTED, labelsize=8)
-    ax.set_title("52-week range  ·  ▎ = current price",
-                 color=MUTED, fontsize=10, pad=8)
-    ax.invert_yaxis()
-    fig.tight_layout(pad=1.2)
-    return fig_to_b64(fig)
+    fig = go.Figure()
+
+    # Background bar: full 52w range (lo → hi)
+    fig.add_trace(
+        go.Bar(
+            x=[h - l for h, l in zip(hi, lo)],
+            base=lo,
+            y=tickers,
+            orientation="h",
+            marker=dict(color=SURFACE, line=dict(color=BORDER, width=1)),
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=range_hover,
+            showlegend=False,
+            name="52w range",
+        )
+    )
+    # Filled portion: lo → current price (intensity of where we are in range)
+    fig.add_trace(
+        go.Bar(
+            x=[p - l for p, l in zip(price, lo)],
+            base=lo,
+            y=tickers,
+            orientation="h",
+            marker=dict(color=BLUE, opacity=0.55, line=dict(width=0)),
+            hoverinfo="skip",
+            showlegend=False,
+            name="lo→price",
+        )
+    )
+
+    # Current price marker dots
+    fig.add_trace(
+        go.Scatter(
+            x=price,
+            y=tickers,
+            mode="markers",
+            marker=dict(
+                color=BLUE_LT,
+                size=11,
+                line=dict(color=TEXT, width=1.2),
+                symbol="circle",
+            ),
+            customdata=range_hover,
+            hovertemplate="%{customdata}<extra></extra>",
+            showlegend=False,
+            name="current price",
+        )
+    )
+
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor=BORDER,
+        tickfont=dict(color=MUTED, size=10),
+        tickprefix="$",
+    )
+    fig.update_yaxes(
+        tickfont=dict(color=TEXT, size=11),
+        automargin=True,
+    )
+    fig.update_layout(
+        **_DARK_LAYOUT,
+        title=dict(
+            text="52-week range  ·  ● = current price",
+            font=dict(color=MUTED, size=12),
+            x=0.02,
+        ),
+        barmode="overlay",
+        height=max(220, len(items_ord) * 34 + 80),
+        bargap=0.35,
+    )
+    return fig_to_html(fig)
 
 
 # ── HTML helpers ─────────────────────────────────────────────────────────────
 
-def _img(b64: str, style: str = "") -> str:
-    """Wrap a base64 PNG in an <img> tag, or return '' if empty."""
-    if not b64:
+def _chart(html_div: str) -> str:
+    """Wrap a Plotly chart HTML div in a styled, dark container.
+
+    Returns '' if the chart string is empty.
+    """
+    if not html_div:
         return ""
-    default = "width:100%;border-radius:8px;margin-bottom:20px"
-    s = style or default
-    return f'<img src="data:image/png;base64,{b64}" style="{s}">'
+    return f'<div class="chart-container">{html_div}</div>'
 
 
 def _badge(label: str, bg: str, fg: str) -> str:
@@ -475,9 +713,15 @@ details.explainer p{{
 }}
 .glossary-term dt{{color:{TEXT};font-weight:700;margin-bottom:4px}}
 .glossary-term dd{{color:{MUTED};font-size:13px;line-height:1.6;margin-left:0}}
+.chart-container{{
+  background:{BG};border:1px solid {BORDER};border-radius:8px;
+  padding:12px;margin:16px 0;overflow:hidden
+}}
+.chart-container .js-plotly-plot{{width:100% !important}}
 @media(max-width:600px){{
   .grid-4{{grid-template-columns:repeat(2,1fr)}}
   .wrap{{padding:0 10px 32px}}
+  .chart-container{{padding:6px}}
 }}
 """
 
@@ -492,6 +736,7 @@ def _html_shell(title: str, body: str, report_date: date = None) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
+<script src="{PLOTLY_CDN}" charset="utf-8"></script>
 <style>{_css()}</style>
 </head>
 <body><div class="wrap">
@@ -721,8 +966,8 @@ def build_daily_report(
     score_val = state_score.get("score", state_score.get("total_score", 0)) or 0
     drivers = state_score.get("drivers", [])
 
-    gauge_b64 = chart_market_state(int(score_val), drivers)
-    sector_b64 = chart_sector_rotation(sector_rotation)
+    gauge_div = chart_market_state(int(score_val), drivers)
+    sector_div = chart_sector_rotation(sector_rotation)
 
     body = _header("Daily Market Brief", date_str,
                    f"Market State Score: {score_val}/100")
@@ -737,11 +982,11 @@ def build_daily_report(
 </div>"""
 
     # Gauge chart
-    if gauge_b64:
+    if gauge_div:
         body += f"""
 <div class="sec">
   <div class="sec-title">Market state</div>
-  {_img(gauge_b64)}
+  {_chart(gauge_div)}
   {explainer_html("market_state_score", "Market State Score")}
 </div>"""
 
@@ -749,11 +994,11 @@ def build_daily_report(
     body += _breadth_strip(new_highs_lows)
 
     # Sector rotation chart
-    if sector_b64:
+    if sector_div:
         body += f"""
 <div class="sec">
   <div class="sec-title">Sector rotation</div>
-  {_img(sector_b64)}
+  {_chart(sector_div)}
   {explainer_html("sector_rotation", "Sector Rotation")}
 </div>"""
 
@@ -772,7 +1017,7 @@ def build_daily_report(
 # ── Weekly report ─────────────────────────────────────────────────────────────
 
 def _theme_section(ranked_themes: list[dict], emerging_clusters: list[dict]) -> str:
-    heatmap_b64 = chart_theme_heatmap(ranked_themes)
+    heatmap_div = chart_theme_heatmap(ranked_themes)
 
     # Top 5 themes with members
     top5 = ranked_themes[:5] if ranked_themes else []
@@ -808,7 +1053,7 @@ def _theme_section(ranked_themes: list[dict], emerging_clusters: list[dict]) -> 
     return f"""
 <div class="sec">
   <div class="sec-title">Theme heatmap</div>
-  {_img(heatmap_b64)}
+  {_chart(heatmap_div)}
   {explainer_html("theme_strength", "Theme Strength Score")}
   {theme_cards}
   {cluster_html}
@@ -816,7 +1061,7 @@ def _theme_section(ranked_themes: list[dict], emerging_clusters: list[dict]) -> 
 
 
 def _sector_section(sector_rotation: list[dict]) -> str:
-    sector_b64 = chart_sector_rotation(sector_rotation)
+    sector_div = chart_sector_rotation(sector_rotation)
     rotation_call = ""
     for s in sector_rotation:
         if s.get("rotation_call"):
@@ -837,7 +1082,7 @@ def _sector_section(sector_rotation: list[dict]) -> str:
     return f"""
 <div class="sec">
   <div class="sec-title">Sector rotation</div>
-  {_img(sector_b64)}
+  {_chart(sector_div)}
   {extra}
   {explainer_html("sector_rotation", "Sector Rotation")}
 </div>"""
@@ -876,7 +1121,7 @@ def _screen_section(
     candidates: list[dict],
     screen_meta: dict,
     held_tickers: set,
-    range_b64: str,
+    range_div: str,
 ) -> str:
     meta = screen_meta.get(screen_id, {})
     title = meta.get("name", screen_id.replace("_", " ").title())
@@ -1033,7 +1278,7 @@ def build_weekly_report(
     score_val = state_score.get("score", state_score.get("total_score", 0)) or 0
     drivers = state_score.get("drivers", [])
 
-    gauge_b64 = chart_market_state(int(score_val), drivers)
+    gauge_div = chart_market_state(int(score_val), drivers)
 
     # Collect all candidates for 52w range chart
     all_candidates: list[dict] = []
@@ -1047,7 +1292,7 @@ def build_weekly_report(
         if t not in seen_tickers:
             seen_tickers.add(t)
             unique_candidates.append(c)
-    range_b64 = chart_52w_range(unique_candidates)
+    range_div = chart_52w_range(unique_candidates)
 
     # ── 1. Header ──────────────────────────────────────────────────────────
     body = _header("Weekly Market Brief", date_str,
@@ -1063,11 +1308,11 @@ def build_weekly_report(
 </div>"""
 
     # Gauge
-    if gauge_b64:
+    if gauge_div:
         body += f"""
 <div class="sec">
   <div class="sec-title">Market state</div>
-  {_img(gauge_b64)}
+  {_chart(gauge_div)}
   {explainer_html("market_state_score", "Market State Score")}
 </div>"""
 
@@ -1082,7 +1327,7 @@ def build_weekly_report(
         screens_inner = ""
         for screen_id, candidates in screen_results.items():
             screens_inner += _screen_section(
-                screen_id, candidates, screen_meta, held_tickers, range_b64
+                screen_id, candidates, screen_meta, held_tickers, range_div
             )
         body += f"""
 <div class="sec">
@@ -1091,11 +1336,11 @@ def build_weekly_report(
 </div>"""
 
     # 52w range chart (after screens, referencing all candidates)
-    if range_b64:
+    if range_div:
         body += f"""
 <div class="sec">
   <div class="sec-title">52-week range — all candidates</div>
-  {_img(range_b64)}
+  {_chart(range_div)}
 </div>"""
 
     # ── 5. Watchlist ───────────────────────────────────────────────────────

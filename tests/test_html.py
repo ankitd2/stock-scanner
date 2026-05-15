@@ -220,7 +220,22 @@ class TestBuildDailyReport:
 
     def test_gauge_chart_embedded(self):
         html = self._build()
-        assert "data:image/png;base64," in html
+        # Plotly emits a <div ... class="plotly-graph-div"> per chart
+        assert "<div" in html
+        assert "plotly-graph-div" in html
+        # And no PNG base64 should be present any more
+        assert "data:image/png;base64," not in html
+
+    def test_plotly_cdn_loaded(self):
+        html = self._build()
+        # The plotly.js library should be loaded once via CDN
+        assert "cdn.plot.ly/plotly" in html
+        assert "<script src=\"https://cdn.plot.ly/plotly" in html
+
+    def test_chart_container_wrapper(self):
+        html = self._build()
+        # Charts are wrapped in our styled container
+        assert "chart-container" in html
 
     def test_handles_empty_gap_movers(self):
         html = self._build(gap_movers=[])
@@ -337,12 +352,25 @@ class TestBuildWeeklyReport:
 
     def test_gauge_chart_embedded(self):
         html = self._build()
-        assert "data:image/png;base64," in html
+        # Plotly emits a <div ... class="plotly-graph-div"> per chart
+        assert "<div" in html
+        assert "plotly-graph-div" in html
+        assert "data:image/png;base64," not in html
 
     def test_range_chart_embedded(self):
         html = self._build()
-        # There should be at least two base64 images (gauge + range)
-        assert html.count("data:image/png;base64,") >= 2
+        # The weekly report embeds multiple Plotly charts
+        # (gauge + sector + themes + range + ...)
+        assert html.count("plotly-graph-div") >= 2
+
+    def test_plotly_cdn_loaded(self):
+        html = self._build()
+        assert "cdn.plot.ly/plotly" in html
+        assert "<script src=\"https://cdn.plot.ly/plotly" in html
+
+    def test_chart_container_wrapper(self):
+        html = self._build()
+        assert "chart-container" in html
 
     def test_dark_theme_css(self):
         html = self._build()
@@ -375,7 +403,8 @@ class TestBuildWeeklyReport:
 
     def test_no_external_dependencies(self):
         html = self._build()
-        # Should not reference any external CSS/JS CDN
+        # The only allowed external dependency is Plotly's CDN, which is
+        # needed for interactive charts. No other CDNs should sneak in.
         assert "cdn.jsdelivr.net" not in html
         assert "unpkg.com" not in html
         assert "googleapis.com/css" not in html
