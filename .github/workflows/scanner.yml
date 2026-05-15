@@ -1,0 +1,38 @@
+name: Market Scanner
+
+on:
+  schedule:
+    - cron: "30 14 * * 1-5"
+    - cron: "0 21 * * 1"
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scanner
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python scanner.py
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-report-${{ github.run_id }}
+          path: report.html
+          retention-days: 30
+        if: always()
