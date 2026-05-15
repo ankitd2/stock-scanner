@@ -1116,19 +1116,32 @@ def _candidate_table_row(c: dict, held_tickers: set) -> str:
 </tr>"""
 
 
+_SCREEN_ID_TO_EXPLAINER = {
+    1: "52wH_proximity",
+    2: "quality_pullback",
+    3: "risk_adj_momentum",
+    4: "quality_momentum",
+    5: "pead",
+    6: "analyst_revision",
+    7: "insider_buys",
+    8: "quality_oversold",
+}
+
+
 def _screen_section(
-    screen_id: str,
+    screen_id,
     candidates: list[dict],
     screen_meta: dict,
     held_tickers: set,
     range_div: str,
 ) -> str:
     meta = screen_meta.get(screen_id, {})
-    title = meta.get("name", screen_id.replace("_", " ").title())
+    title = meta.get("name", str(screen_id).replace("_", " ").title())
     description = meta.get("description", "")
-    citation = meta.get("citation", "")
+    citation = meta.get("citation", meta.get("evidence", ""))
 
-    expl = explainer_html(screen_id, title)
+    expl_key = _SCREEN_ID_TO_EXPLAINER.get(screen_id, str(screen_id))
+    expl = explainer_html(expl_key, title)
 
     if not candidates:
         body = f'<div style="color:{MUTED};padding:12px">No candidates this week.</div>'
