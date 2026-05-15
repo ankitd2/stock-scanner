@@ -355,6 +355,7 @@ def main():
 
     # ── Weekly-only: themes + clustering ─────────────────────────────────────
     ranked_themes, emerging_clusters, sector_rotation = [], [], []
+    backtest_results: dict = {}
     if mode == "weekly":
         print("[scanner] analyzing themes...", flush=True)
         theme_analysis = analyze_themes(universe_histories)
@@ -369,6 +370,20 @@ def main():
                 cluster.get("label", ""),
                 webhook, state
             )
+
+        # ── Backtest (informational only — never blocks the live screens) ──
+        try:
+            from analytics.backtest import get_or_compute_backtest
+            print("[scanner] running/loading backtest cache...", flush=True)
+            spy_hist = universe_histories.get("SPY", pd.DataFrame())
+            backtest_results = get_or_compute_backtest(universe_histories, spy_hist)
+            print(
+                f"[scanner] backtest stats for {len(backtest_results)} screens",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[scanner] backtest skipped: {e}", file=sys.stderr)
+            backtest_results = {}
     else:
         # Daily still gets sector rotation for the short report
         from analytics.themes import compute_sector_rotation
@@ -401,6 +416,7 @@ def main():
             watch_prices=watch_prices,
             pre_ipo=cfg["pre_ipo"],
             new_highs_lows=new_highs_lows,
+            backtest_results=backtest_results,
         )
     else:
         html = build_daily_report(

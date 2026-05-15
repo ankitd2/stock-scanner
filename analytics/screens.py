@@ -463,47 +463,195 @@ def _screen_7_insider_cluster(
     info: dict,
     ind: dict,
     held: bool,
+    cluster_lookup: Optional[dict] = None,
 ) -> Optional[dict]:
     """
     Screen 7: Insider Cluster Buys (Lakonishok-Lee 2001)
-    Uses SEC EDGAR Form 4. Returns stub / empty if edgar unavailable.
-    - >= 3 insiders buying in last 30 days
-    - Total purchases > $500k
-    - No selling
-    - mcap >= 2B
+    Uses SEC EDGAR Form 4 (via openinsider aggregator). Returns ``None`` when
+    the data module is unavailable, the network fetch fails, or this ticker
+    doesn't pass the criteria.
+
+    Criteria (within the trailing 30-day window):
+      - >= 3 distinct insiders buying
+      - Total purchases > $500k
+      - No insider selling
+      - Universal hard kills (mcap >= 2B, sell_count < 2, not overbought)
+
+    Parameters
+    ----------
+    cluster_lookup : dict, optional
+        Pre-computed ``{ticker: signal_dict}`` from
+        :func:`_screen_insider_cluster_buys`. If provided, no network call is
+        made here. If ``None``, the function lazily computes the lookup on
+        first call (network fetch). The lookup is cached on this function so
+        callers iterating per-ticker only pay once.
     """
     if _hard_kill(info, ind):
         return None
 
+    # Lazy-build the cluster lookup the first time we're called (per-ticker
+    # invocations from run_screen).
+    if cluster_lookup is None:
+        cluster_lookup = _ensure_cluster_lookup()
+    if cluster_lookup is None:
+        return None
+
+    sig = cluster_lookup.get(ticker)
+    if not sig:
+        return None
+
+    n_insiders = sig.get("n_insiders", 0)
+    total_value = sig.get("total_value", 0.0)
+    no_selling = sig.get("no_selling", False)
+
+    if n_insiders < 3:
+        return None
+    if total_value < 500_000:
+        return None
+    if not no_selling:
+        return None
+
+    earliest = sig.get("earliest_date", "")
+    latest = sig.get("latest_date", "")
+    reason = (
+        f"{n_insiders} insiders bought ${total_value/1e3:.0f}k between "
+        f"{earliest} and {latest} with no insider selling — "
+        f"Lakonishok-Lee insider cluster signal"
+    )
+    cand = _build_candidate(ticker, 7, reason, held, info, ind)
+    cand["insider_buys"] = {
+        "n_insiders": n_insiders,
+        "total_value": total_value,
+        "names": sig.get("insider_names", []),
+    }
+    return cand
+
+
+# Module-level cache for the cluster lookup so per-ticker calls don't all
+# hit the network. Keyed by lookback_days for safety.
+_CLUSTER_LOOKUP_CACHE: dict[int, Optional[dict]] = {}
+
+
+def _ensure_cluster_lookup(lookback_days: int = 30) -> Optional[dict]:
+    """
+    Lazily fetch + memoize the insider cluster lookup. Returns
+    ``{ticker: signal_dict}`` on success or ``None`` on any failure
+    (network error, import error, parse error).
+    """
+    if lookback_days in _CLUSTER_LOOKUP_CACHE:
+        return _CLUSTER_LOOKUP_CACHE[lookback_days]
     try:
-        from data import edgar  # noqa: F401
-        # If edgar module exists, query it
-        cluster = edgar.get_insider_cluster(ticker, days=30)
-        if not cluster:
-            return None
-
-        n_buyers = cluster.get("n_buyers", 0)
-        total_value = cluster.get("total_value", 0)
-        has_sells = cluster.get("has_sells", True)
-
-        if n_buyers < 3:
-            return None
-        if total_value < 500_000:
-            return None
-        if has_sells:
-            return None
-
-        reason = (
-            f"{n_buyers} insiders bought ${total_value/1e6:.1f}M in last 30 days "
-            f"with no selling — Lakonishok-Lee insider cluster signal"
-        )
-        return _build_candidate(ticker, 7, reason, held, info, ind)
-
+        from data.edgar import get_insider_purchases, cluster_buy_signal
     except ImportError:
-        # edgar module not yet available — screen returns nothing gracefully
+        _CLUSTER_LOOKUP_CACHE[lookback_days] = None
         return None
+    try:
+        purchases = get_insider_purchases(lookback_days=lookback_days)
     except Exception:
+        _CLUSTER_LOOKUP_CACHE[lookback_days] = None
         return None
+    if not purchases:
+        _CLUSTER_LOOKUP_CACHE[lookback_days] = {}
+        return {}
+    try:
+        signals = cluster_buy_signal(
+            purchases,
+            min_insiders=3,
+            min_value=500_000.0,
+            window_days=lookback_days,
+        )
+    except Exception:
+        _CLUSTER_LOOKUP_CACHE[lookback_days] = None
+        return None
+    lookup = {s["ticker"]: s for s in signals}
+    _CLUSTER_LOOKUP_CACHE[lookback_days] = lookup
+    return lookup
+
+
+def _reset_cluster_cache() -> None:
+    """Clear the Screen 7 module-level cluster cache (used by tests)."""
+    _CLUSTER_LOOKUP_CACHE.clear()
+
+
+def _screen_insider_cluster_buys(
+    universe_histories: dict,
+    ticker_infos: dict,
+    held_tickers: set,
+) -> list[dict]:
+    """
+    Universe-aware Screen 7 entry point.
+
+    Fetches insider purchase data once, runs the cluster-buy detector, then
+    walks the universe filtering to tickers that (a) appear in our universe,
+    (b) pass the universal mcap floor, and (c) have a valid indicator dict.
+
+    Returns up to 15 candidates sorted by total purchase value (descending).
+    """
+    try:
+        from data.edgar import get_insider_purchases, cluster_buy_signal
+    except ImportError:
+        return []
+
+    try:
+        purchases = get_insider_purchases(lookback_days=30)
+    except Exception:
+        return []
+    if not purchases:
+        return []
+
+    try:
+        signals = cluster_buy_signal(
+            purchases,
+            min_insiders=3,
+            min_value=500_000.0,
+            window_days=30,
+        )
+    except Exception:
+        return []
+    if not signals:
+        return []
+
+    if held_tickers is None:
+        held_tickers = set()
+
+    results: list[dict] = []
+    for sig in signals:
+        ticker = sig.get("ticker")
+        if not ticker or ticker not in universe_histories:
+            continue
+        # The cluster signal already enforces n_insiders / total_value via
+        # cluster_buy_signal's thresholds; we still gate on "no selling".
+        if not sig.get("no_selling", False):
+            continue
+
+        info = ticker_infos.get(ticker, {})
+        mcap = info.get("mcap") or 0
+        if mcap < 2e9:
+            continue
+
+        try:
+            ind = compute_all(universe_histories[ticker])
+        except Exception:
+            continue
+        if not ind:
+            continue
+
+        held = ticker in held_tickers
+        reason = (
+            f"{sig['n_insiders']} insiders bought "
+            f"${sig['total_value']/1e3:.0f}k between {sig['earliest_date']} "
+            f"and {sig['latest_date']} with no insider selling — "
+            f"Lakonishok-Lee insider cluster signal"
+        )
+        cand = _build_candidate(ticker, 7, reason, held, info, ind)
+        cand["insider_buys"] = {
+            "n_insiders": sig["n_insiders"],
+            "total_value": sig["total_value"],
+            "names": sig.get("insider_names", []),
+        }
+        results.append(cand)
+
+    return results[:15]
 
 
 def _screen_8_quality_oversold(
@@ -588,6 +736,15 @@ def run_screen(
         return []
     if held_tickers is None:
         held_tickers = set()
+
+    # Screen 7 is universe-aware (single network fetch, then filter universe).
+    if screen_id == 7:
+        try:
+            return _screen_insider_cluster_buys(
+                universe_histories, ticker_infos, held_tickers
+            )
+        except Exception:
+            return []
 
     # For Screen 3, compute universe-level 85th percentile of vol_adj_mom
     mom_threshold = 0.0
@@ -684,13 +841,23 @@ def run_all_screens(
 
     for screen_id in range(1, 9):
         candidates = []
+
+        # Screen 7 is universe-aware (single fetch, then filter the universe).
+        if screen_id == 7:
+            try:
+                results[screen_id] = _screen_insider_cluster_buys(
+                    universe_histories, ticker_infos, held_tickers
+                )
+            except Exception:
+                results[screen_id] = []
+            continue
+
         screen_fns = {
             1: _screen_1_52wh_proximity,
             2: _screen_2_quality_pullback,
             4: _screen_4_quality_momentum,
             5: _screen_5_pead,
             6: _screen_6_analyst_revision,
-            7: _screen_7_insider_cluster,
             8: _screen_8_quality_oversold,
         }
 

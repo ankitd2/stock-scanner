@@ -1142,12 +1142,167 @@ _SCREEN_ID_TO_EXPLAINER = {
 }
 
 
+def _fmt_signed_pct(v) -> str:
+    """Format a percentage with sign, e.g. +8.2% or -1.4%. '—' if None."""
+    if v is None:
+        return "—"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{f:+.1f}%"
+
+
+def _fmt_signed_pp(v) -> str:
+    """Format alpha (percentage points) with sign, e.g. +4.1pp."""
+    if v is None:
+        return "—"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{f:+.1f}pp"
+
+
+def _backtest_panel(screen_id, backtest_data: dict | None) -> str:
+    """
+    Render an inline collapsible block summarizing the 5-year walk-forward
+    backtest for one screen. If `backtest_data` is None or empty, returns
+    an empty string. If it indicates `skipped`, renders an explanatory note.
+
+    Reads these exact keys (per the field-name contract):
+      name, n_observations, n_unique_tickers,
+      median_fwd_1m/3m/6m, spy_baseline_1m/3m/6m,
+      alpha_3m, alpha_6m, hit_rate_3m, sharpe_3m,
+      lookback_weeks, as_of, skipped, reason.
+    """
+    if not backtest_data:
+        return ""
+
+    if backtest_data.get("skipped"):
+        reason = backtest_data.get("reason", "")
+        reason_html = (
+            f' <span style="color:{MUTED}">— {reason}</span>'
+            if reason else ""
+        )
+        return f"""
+<details class="backtest-panel" style="margin-top:12px">
+  <summary>&#128200; Historical performance (5y walk-forward)</summary>
+  <div style="margin-top:8px;padding:10px;background:{BG};
+              border:1px solid {BORDER};border-radius:6px;
+              color:{MUTED};font-size:12px;line-height:1.5">
+    Historical backtest not available for this screen
+    (requires fundamentals snapshots or non-price data).{reason_html}
+  </div>
+</details>"""
+
+    med_3m = backtest_data.get("median_fwd_3m")
+    spy_3m = backtest_data.get("spy_baseline_3m")
+    alpha_3m = backtest_data.get("alpha_3m")
+    hit_rate = backtest_data.get("hit_rate_3m")
+    sharpe = backtest_data.get("sharpe_3m")
+    n_obs = backtest_data.get("n_observations")
+    n_uniq = backtest_data.get("n_unique_tickers")
+    lookback_weeks = backtest_data.get("lookback_weeks")
+    as_of = backtest_data.get("as_of", "")
+
+    # No-data case (zero observations)
+    if not n_obs:
+        return f"""
+<details class="backtest-panel" style="margin-top:12px">
+  <summary>&#128200; Historical performance (5y walk-forward)</summary>
+  <div style="margin-top:8px;padding:10px;background:{BG};
+              border:1px solid {BORDER};border-radius:6px;
+              color:{MUTED};font-size:12px">
+    Backtest produced no observations over the lookback window
+    (insufficient data or no signals fired).
+  </div>
+</details>"""
+
+    med_color = GREEN if (med_3m or 0) >= 0 else RED
+    alpha_color = GREEN if (alpha_3m or 0) >= 0 else RED
+    sharpe_str = f"{sharpe:.2f}" if isinstance(sharpe, (int, float)) else "—"
+    hit_color = GREEN if (hit_rate or 0) >= 50 else AMBER
+    hit_str = f"{hit_rate:.0f}%" if isinstance(hit_rate, (int, float)) else "—"
+
+    lookback_label = (
+        f"{lookback_weeks // 52}y walk-forward"
+        if isinstance(lookback_weeks, int) and lookback_weeks >= 52
+        else "Walk-forward"
+    )
+
+    meta_line = (
+        f"<div style='font-size:10px;color:#6e7681;margin-top:8px'>"
+        f"{n_uniq or 0} unique tickers · "
+        f"as of {as_of}</div>"
+    )
+
+    return f"""
+<details class="backtest-panel" style="margin-top:12px">
+  <summary>&#128200; Historical performance ({lookback_label})</summary>
+  <div class="backtest-grid"
+       style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
+              margin-top:10px">
+    <div style="background:{BG};padding:8px;border-radius:6px;
+                border:1px solid {BORDER}">
+      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
+                  letter-spacing:.06em;margin-bottom:3px">
+        Median 3m fwd return</div>
+      <div style="font-size:15px;font-weight:700;color:{med_color}">
+        {_fmt_signed_pct(med_3m)}</div>
+    </div>
+    <div style="background:{BG};padding:8px;border-radius:6px;
+                border:1px solid {BORDER}">
+      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
+                  letter-spacing:.06em;margin-bottom:3px">
+        vs SPY 3m baseline</div>
+      <div style="font-size:15px;font-weight:700;color:{TEXT}">
+        {_fmt_signed_pct(spy_3m)}</div>
+    </div>
+    <div style="background:{BG};padding:8px;border-radius:6px;
+                border:1px solid {BORDER}">
+      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
+                  letter-spacing:.06em;margin-bottom:3px">
+        3m alpha</div>
+      <div style="font-size:15px;font-weight:700;color:{alpha_color}">
+        {_fmt_signed_pp(alpha_3m)}</div>
+    </div>
+    <div style="background:{BG};padding:8px;border-radius:6px;
+                border:1px solid {BORDER}">
+      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
+                  letter-spacing:.06em;margin-bottom:3px">
+        Hit rate (beat SPY)</div>
+      <div style="font-size:15px;font-weight:700;color:{hit_color}">
+        {hit_str}</div>
+    </div>
+    <div style="background:{BG};padding:8px;border-radius:6px;
+                border:1px solid {BORDER}">
+      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
+                  letter-spacing:.06em;margin-bottom:3px">
+        Sharpe (3m)</div>
+      <div style="font-size:15px;font-weight:700;color:{TEXT}">
+        {sharpe_str}</div>
+    </div>
+    <div style="background:{BG};padding:8px;border-radius:6px;
+                border:1px solid {BORDER}">
+      <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
+                  letter-spacing:.06em;margin-bottom:3px">
+        Observations</div>
+      <div style="font-size:15px;font-weight:700;color:{TEXT}">
+        {n_obs:,}</div>
+    </div>
+  </div>
+  {meta_line}
+</details>"""
+
+
 def _screen_section(
     screen_id,
     candidates: list[dict],
     screen_meta: dict,
     held_tickers: set,
     range_div: str,
+    backtest_data: dict | None = None,
 ) -> str:
     meta = screen_meta.get(screen_id, {})
     title = meta.get("name", str(screen_id).replace("_", " ").title())
@@ -1185,6 +1340,8 @@ def _screen_section(
         if description else ""
     )
 
+    backtest_html = _backtest_panel(screen_id, backtest_data)
+
     return f"""
 <div class="card" style="margin-bottom:18px">
   <div style="font-size:16px;font-weight:700;color:{TEXT};margin-bottom:6px">
@@ -1193,6 +1350,7 @@ def _screen_section(
   {citation_html}
   {expl}
   {body}
+  {backtest_html}
 </div>"""
 
 
@@ -1289,6 +1447,7 @@ def build_weekly_report(
     new_highs_lows: dict,
     report_date: date = None,
     watch_prices: dict | None = None,
+    backtest_results: dict | None = None,
 ) -> str:
     """
     Generates the full weekly report (~5 sections):
@@ -1356,8 +1515,21 @@ def build_weekly_report(
     if screen_results:
         screens_inner = ""
         for screen_id, candidates in screen_results.items():
+            # Look up by both int and string keys for resilience against
+            # callers that key the dict either way.
+            bt = None
+            if backtest_results:
+                bt = backtest_results.get(screen_id)
+                if bt is None:
+                    bt = backtest_results.get(str(screen_id))
+                    if bt is None:
+                        try:
+                            bt = backtest_results.get(int(screen_id))
+                        except (TypeError, ValueError):
+                            bt = None
             screens_inner += _screen_section(
-                screen_id, candidates, screen_meta, held_tickers, range_div
+                screen_id, candidates, screen_meta, held_tickers, range_div,
+                backtest_data=bt,
             )
         body += f"""
 <div class="sec">
