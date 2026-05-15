@@ -1,0 +1,4 @@
+yfinance>=0.2.40
+pandas>=2.0.0
+matplotlib>=3.8.0
+requests>=2.32.0

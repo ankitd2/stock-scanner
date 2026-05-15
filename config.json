@@ -1,0 +1,37 @@
+{
+  "portfolio": [
+    "META", "NVDA", "VTI", "VRT", "MU",
+    "MSFT", "AMZN", "CRWD", "ANET", "AAPL", "APP"
+  ],
+
+  "watchlist": {
+    "GOOGL": {
+      "buy_at": 375,
+      "direction": "below",
+      "note": "Cloud +63%, I/O catalysts priced in — wait for 10% pullback from $403 high"
+    },
+    "RKLB": {
+      "buy_at": 95,
+      "direction": "below",
+      "note": "Above all analyst PTs — Neutron launch H2 2026 is the real re-rating event"
+    },
+    "NBIS": {
+      "buy_at": 185,
+      "direction": "below",
+      "note": "+16% earnings pop — wait for consolidation"
+    },
+    "CRDO": {
+      "buy_at": 155,
+      "direction": "below",
+      "note": "Only 3% PT upside at current price"
+    }
+  },
+
+  "alert_move_pct": 5.0,
+
+  "weekly_scan_weekday": 0,
+
+  "run_screener_daily": false,
+
+  "discord_webhook": ""
+}
