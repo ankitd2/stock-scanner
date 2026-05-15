@@ -693,6 +693,49 @@ def save_backtest_cache(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def _fetch_extended_history(
+    universe_histories: dict[str, pd.DataFrame],
+    period: str = "5y",
+    n_top: int = 300,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    """
+    The walk-forward backtest needs 5y of history but the main scanner only
+    pulls 1y. Subsample the universe to the top `n_top` most-liquid tickers
+    (using the 1y panel we already have) and re-fetch their full history.
+
+    Returns (extended_histories, spy_history). Falls back to the 1y panel
+    when the extended fetch fails.
+    """
+    close_panel, vol_panel = _build_panels(universe_histories)
+    if close_panel.empty:
+        return universe_histories, pd.DataFrame()
+
+    liquid = _subsample_liquid(close_panel, vol_panel, n_top=n_top)
+    if not liquid:
+        liquid = list(close_panel.columns)[:n_top]
+
+    # Always include SPY so the baseline works
+    if "SPY" not in liquid:
+        liquid = ["SPY"] + liquid
+
+    try:
+        from data.fetcher import bulk_history
+    except ImportError:
+        return universe_histories, universe_histories.get("SPY", pd.DataFrame())
+
+    print(f"[backtest] fetching {period} history for top {len(liquid)} "
+          f"liquid tickers (cold cache)...", file=sys.stderr)
+    extended = bulk_history(liquid, period=period)
+    if not extended or len(extended) < 50:
+        # Fetch failed catastrophically — fall back to 1y data
+        print("[backtest] extended fetch returned too few tickers; "
+              "falling back to 1y data", file=sys.stderr)
+        return universe_histories, universe_histories.get("SPY", pd.DataFrame())
+
+    spy_history = extended.get("SPY", universe_histories.get("SPY", pd.DataFrame()))
+    return extended, spy_history
+
+
 def get_or_compute_backtest(
     universe_histories: dict[str, pd.DataFrame],
     spy_history: pd.DataFrame,
@@ -703,11 +746,12 @@ def get_or_compute_backtest(
     Returns cached backtest if <CACHE_TTL_DAYS days old, else runs a fresh
     walk-forward and caches the result.
 
-    This is the function scanner.py calls. It runs all 8 screen ids — the
-    non-backtestable screens (5, 6, 7) emit a {"skipped": True, ...} stub.
+    The walk-forward needs 5y of data. The main scanner only pulls 1y, so on
+    a cold cache we re-fetch 5y of history for the most-liquid subsample
+    (~300 tickers, ~2-3 extra minutes — only once every 14 days).
 
-    Never raises: any internal failure returns the existing cache (possibly
-    empty) so the caller can still render the report.
+    Never raises: any internal failure returns an empty stub so the report
+    still renders.
     """
     if not force_refresh:
         cached = load_cached_backtest(cache_path)
@@ -715,10 +759,17 @@ def get_or_compute_backtest(
             return cached
 
     try:
+        # Fetch the 5y history we actually need for walk-forward
+        ext_histories, ext_spy = _fetch_extended_history(
+            universe_histories, period="5y", n_top=300,
+        )
+        # Use the extended SPY if we got one, else fall back to caller's
+        spy = ext_spy if ext_spy is not None and not ext_spy.empty else spy_history
+
         results = run_walkforward_backtest(
             screen_ids=[1, 2, 3, 4, 5, 6, 7, 8],
-            universe_histories=universe_histories or {},
-            spy_history=spy_history if spy_history is not None else pd.DataFrame(),
+            universe_histories=ext_histories or {},
+            spy_history=spy if spy is not None else pd.DataFrame(),
         )
         # Persist
         save_backtest_cache(results, cache_path=cache_path)
