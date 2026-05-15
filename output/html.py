@@ -379,10 +379,10 @@ def chart_theme_heatmap(ranked_themes: list[dict]) -> str:
         return fig_to_html(fig)
 
     # Ascending sort so top scorers appear at TOP in horizontal layout
-    data = sorted(ranked_themes, key=lambda d: float(d.get("theme_score", 0) or 0))
+    data = sorted(ranked_themes, key=lambda d: float(d.get("theme_score", d.get("score", 0)) or 0))
     n = len(data)
     labels = [d.get("name", "?") for d in data]
-    scores = [float(d.get("theme_score", 0) or 0) for d in data]
+    scores = [float(d.get("theme_score", d.get("score", 0)) or 0) for d in data]
 
     # Tier colours: top 5 green, bottom 5 red, middle yellow.
     # data is ascending, so the LAST 5 are the top tier.
@@ -1025,7 +1025,7 @@ def _theme_section(ranked_themes: list[dict], emerging_clusters: list[dict]) -> 
     for t in top5:
         members = t.get("members", [])
         mem_str = ", ".join(str(m) for m in members[:8])
-        score = t.get("theme_score", 0)
+        score = t.get("theme_score", t.get("score", 0))
         c = GREEN if score > 0 else RED
         theme_cards += f"""
 <div class="card" style="margin-bottom:8px">
