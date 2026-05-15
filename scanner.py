@@ -1,753 +1,534 @@
 #!/usr/bin/env python3
 """
-Free market scanner — yfinance + matplotlib + HTML report.
-No AI APIs. No paid services.
-
-Outputs
-  1. report.html  — full newsletter-style HTML (saved as Actions artifact)
-  2. GitHub Actions job summary (visible in Actions tab, markdown)
-  3. Discord webhook — urgent alerts only (watch price hit / big moves)
+Market Intelligence Scanner — orchestrator
+Runs daily (pre/post market) or weekly (full deep dive).
 """
-
-import json, os, sys, io, base64, warnings, traceback
-from datetime import datetime, timedelta, date
-from pathlib import Path
-import requests
-
-warnings.filterwarnings("ignore")
-import yfinance as yf
+import json, os, sys, argparse
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from datetime import date
+from pathlib import Path
 
-# ── Config ─────────────────────────────────────────────────────────────────
-def load_config():
-    with open("config.json") as f:
-        return json.load(f)
+# Ensure project root on path
+sys.path.insert(0, str(Path(__file__).parent))
 
-NOW  = datetime.now()
-DATE = NOW.strftime("%A, %B %d, %Y")
+try:
+    from data.fetcher import bulk_history, get_ticker_info, get_index_data, get_news
+    from data.fred import latest_fred, get_fred_series, fred_zscore
+    from data.aaii import latest_aaii
+    from data.cache import RunCache
+    from analytics.market_state import compute_market_state
+    from analytics.themes import analyze_themes
+    from analytics.screens import run_all_screens, SCREEN_META
+    from output.html import build_daily_report, build_weekly_report
+    from output.discord import (load_state, save_state,
+                                 alert_watch_trigger, alert_big_move,
+                                 alert_screener_candidate, alert_regime_shift,
+                                 alert_emerging_cluster)
+    from output.pages import stage_report, update_index
+    _MODULES_AVAILABLE = True
+except ImportError as _import_err:
+    _MODULES_AVAILABLE = False
+    _IMPORT_ERR = _import_err
 
-# ── Screener universe ──────────────────────────────────────────────────────
-UNIVERSE = [
-    "MSFT","GOOGL","AMZN","META","NVDA","TSLA","AAPL",
-    "CRM","NOW","SNOW","DDOG","NET","ZS","CRWD","PANW",
-    "PLTR","APP","TTD","HUBS","SHOP","RDDT","SPOT","NFLX",
-    "AMD","AVGO","MU","AMAT","KLAC","MRVL","ARM","TSM",
-    "ANET","CRDO","VRT","GEV","CEG","VST","NBIS","APLD","CRWV",
-    "UBER","ABNB","BKNG","DASH","ISRG","DXCM","HIMS","VEEV",
-    "INTU","ADBE","RKLB","KTOS","AXON","LMT",
-    "COIN","HOOD","SOFI","NU","MELI",
-]
 
-# ── Formatters ─────────────────────────────────────────────────────────────
-def fmt_price(v):
-    return f"${v:,.2f}" if v else "—"
+def load_config(path: str = "config.json") -> dict:
+    with open(path) as f:
+        cfg = json.load(f)
+    # Support both "portfolio" (legacy key) and "held"
+    held = cfg.get("held", cfg.get("portfolio", []))
+    return {
+        "held": held,
+        "watchlist": cfg.get("watchlist", {}),
+        "pre_ipo": cfg.get("pre_ipo", []),
+        "alert_move_pct": cfg.get("alert_move_pct", 5.0),
+        "discord_webhook": os.environ.get("DISCORD_WEBHOOK", cfg.get("discord_webhook", "")),
+    }
 
-def fmt_mcap(v):
-    if not v: return "—"
-    if v >= 1e12: return f"${v/1e12:.1f}T"
-    if v >= 1e9:  return f"${v/1e9:.1f}B"
-    return f"${v/1e6:.0f}M"
 
-def fmt_pct(v, plus=True):
-    if v is None: return "—"
-    return f"{'+'if v>0 and plus else ''}{v:.1f}%"
+def get_universe_tickers() -> list[str]:
+    """Load Russell 1000 + growth extension, deduplicated."""
+    r1k_path = Path("universe/russell1000.csv")
+    ext_path = Path("universe/growth_extension.csv")
+    r1k = r1k_path.read_text().splitlines() if r1k_path.exists() else []
+    ext = ext_path.read_text().splitlines() if ext_path.exists() else []
+    seen, result = set(), []
+    for t in r1k + ext:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            result.append(t)
+    # Fallback: built-in universe if files are missing
+    if not result:
+        result = [
+            "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AAPL",
+            "CRM", "NOW", "SNOW", "DDOG", "NET", "ZS", "CRWD", "PANW",
+            "PLTR", "APP", "TTD", "HUBS", "SHOP", "RDDT", "NFLX",
+            "AMD", "AVGO", "MU", "AMAT", "MRVL", "ARM", "TSM",
+            "ANET", "CRDO", "VRT", "GEV", "CEG", "VST", "NBIS", "APLD", "CRWV",
+            "UBER", "ABNB", "BKNG", "ISRG", "DXCM", "HIMS", "VEEV",
+            "INTU", "ADBE", "RKLB", "KTOS", "AXON", "COIN", "SOFI", "MELI",
+            "SPY", "RSP", "SPHB", "SPLV",
+        ]
+    return result
 
-# ── Data helpers ───────────────────────────────────────────────────────────
-def calc_rsi(prices, period=14):
-    try:
-        delta = prices.diff()
-        gain  = delta.clip(lower=0).rolling(period).mean()
-        loss  = (-delta.clip(upper=0)).rolling(period).mean()
-        return round(float((100 - 100/(1+gain/loss)).iloc[-1]), 1)
-    except: return None
 
-def get_rec_counts(t):
-    buy=hold=sell=0
-    try:
-        recs = t.recommendations
-        if recs is None or recs.empty: return buy,hold,sell
-        for col in recs.tail(30).columns:
-            cl  = col.lower()
-            val = int(recs.tail(30)[col].sum())
-            if "buy" in cl:   buy  += val
-            elif "hold" in cl or "neutral" in cl: hold += val
-            elif "sell" in cl: sell += val
-    except: pass
-    return buy, hold, sell
-
-def get_earnings_date(t):
-    try:
-        cal = t.calendar
-        if not isinstance(cal, dict): return None
-        dates = cal.get("Earnings Date", [])
-        for d in (dates if hasattr(dates,"__iter__") else [dates]):
-            dt = pd.Timestamp(d).date()
-            if dt >= date.today(): return dt
-    except: return None
-
-def get_stock(ticker):
-    try:
-        t    = yf.Ticker(ticker)
-        info = t.info or {}
-        hist = t.history(period="1y", auto_adjust=True)
-        if hist.empty: return None
-
-        curr  = float(hist["Close"].iloc[-1])
-        hi52  = float(hist["High"].max())
-        lo52  = float(hist["Low"].min())
-        from_hi = (hi52-curr)/hi52*100 if hi52 else None
-
-        pct_today = 0.0
-        if len(hist)>=2:
-            pct_today=(curr-float(hist["Close"].iloc[-2]))/float(hist["Close"].iloc[-2])*100
-
-        ytd = hist[hist.index.year==NOW.year]
-        pct_ytd=((curr-float(ytd["Close"].iloc[0]))/float(ytd["Close"].iloc[0])*100
-                 if not ytd.empty else 0.0)
-
-        tgt_mean = info.get("targetMeanPrice")
-        tgt_high = info.get("targetHighPrice")
-        tgt_low  = info.get("targetLowPrice")
-        n_analysts = int(info.get("numberOfAnalystOpinions") or 0)
-        upside = ((tgt_mean-curr)/curr*100) if tgt_mean else None
-        upside_hi = ((tgt_high-curr)/curr*100) if tgt_high else None
-
-        rec_mean = info.get("recommendationMean")
-        rec_key  = (info.get("recommendationKey") or "").replace("-"," ").title()
-        buy, hold, sell = get_rec_counts(t)
-        total = buy+hold+sell
-        buy_pct = round(buy/total*100) if total else None
-
-        def clean_pe(v):
-            return round(v,1) if v and 0<v<2000 else None
-
-        rev_growth   = info.get("revenueGrowth")
-        gross_margin = info.get("grossMargins")
-        op_margin    = info.get("operatingMargins")
-
-        news=[]
-        try:
-            for item in (t.news or [])[:3]:
-                if item.get("title"):
-                    news.append({"title":item["title"],"url":item.get("link","#")})
-        except: pass
-
-        return {
-            "ticker":     ticker,
-            "name":       info.get("shortName", ticker),
-            "sector":     info.get("sector",""),
-            "price":      round(curr,2),
-            "hi52":       round(hi52,2),
-            "lo52":       round(lo52,2),
-            "from_hi":    round(from_hi,1) if from_hi else None,
-            "pct_today":  round(pct_today,2),
-            "pct_ytd":    round(pct_ytd,1),
-            "tgt_mean":   round(tgt_mean,2) if tgt_mean else None,
-            "tgt_high":   round(tgt_high,2) if tgt_high else None,
-            "tgt_low":    round(tgt_low,2) if tgt_low else None,
-            "upside":     round(upside,1) if upside else None,
-            "upside_hi":  round(upside_hi,1) if upside_hi else None,
-            "n_analysts": n_analysts,
-            "rec_mean":   round(rec_mean,2) if rec_mean else None,
-            "rec_key":    rec_key,
-            "buy":buy,"hold":hold,"sell":sell,
-            "buy_pct":    buy_pct,
-            "rev_growth": round(rev_growth*100,1) if rev_growth else None,
-            "gross_margin":round(gross_margin*100,1) if gross_margin else None,
-            "op_margin":  round(op_margin*100,1) if op_margin else None,
-            "pe_trailing":clean_pe(info.get("trailingPE")),
-            "pe_forward": clean_pe(info.get("forwardPE")),
-            "peg":        round(info.get("pegRatio"),2) if info.get("pegRatio") and 0<info.get("pegRatio",99)<20 else None,
-            "mcap":       info.get("marketCap"),
-            "earnings_dt":get_earnings_date(t),
-            "rsi":        calc_rsi(hist["Close"]),
-            "news":       news,
-            "hist":       hist,
-        }
-    except Exception as e:
-        print(f"  [{ticker}] {e}")
-        return None
-
-# ── Skill criteria (pure logic, no AI) ────────────────────────────────────
-def skill_verdict(s):
-    passes, fails, kills = [], [], []
-
-    rg = s.get("rev_growth")
-    if rg is not None: (passes if rg>=20 else fails).append(f"Rev growth {rg:+.0f}% (need >20%)")
-    else: fails.append("Rev growth: no data")
-
-    bp = s.get("buy_pct")
-    if bp is not None: (passes if bp>=80 else fails).append(f"Buy consensus {bp:.0f}% (need ≥80%)")
-    else: fails.append("Buy consensus: no data")
-
-    sell = s.get("sell",0)
-    if sell>=2: kills.append(f"{sell} sell ratings (hard kill)")
-    else: passes.append(f"{sell} sell ratings ✓")
-
-    fh = s.get("from_hi")
-    if fh is not None: (passes if 10<=fh<=40 else fails).append(f"{fh:.1f}% below 52wk high (need 10–40%)")
-    else: fails.append("52wk high: no data")
-
-    up = s.get("upside")
-    if up is not None:
-        (passes if up>=15 else fails).append(f"PT upside {up:+.0f}% (need ≥15%)")
-        if s.get("tgt_high") and s["price"]>s["tgt_high"]:
-            kills.append(f"Above highest PT ${s['tgt_high']} (hard kill)")
-    else: fails.append("Analyst PT: no data")
-
-    mc = s.get("mcap")
-    if mc: (passes if mc>=2e9 else fails).append(f"Mkt cap {fmt_mcap(mc)} (need >$2B)")
-
-    rsi = s.get("rsi")
-    if rsi and rsi>78 and fh and fh<5:
-        kills.append(f"RSI {rsi} + near 52wk high (hard kill)")
-
-    if kills: v="PASS"
-    elif len(fails)==0: v="BUY"
-    elif len(fails)==1: v="WATCH"
-    else: v="WAIT"
-
-    return {"verdict":v,"passes":passes,"fails":fails,"kills":kills,
-            "score":len(passes)-len(kills)*2}
-
-# ── Market pulse ───────────────────────────────────────────────────────────
-def get_market_pulse():
-    indices={"S&P 500":"^GSPC","Nasdaq":"^IXIC","VIX":"^VIX","10Y Yield":"^TNX"}
-    pulse={}
-    for name,sym in indices.items():
-        try:
-            hist=yf.Ticker(sym).history(period="5d",auto_adjust=True)
-            if len(hist)>=2:
-                prev=hist["Close"].iloc[-2]; curr=hist["Close"].iloc[-1]
-                pulse[name]={"value":float(curr),"pct":float((curr-prev)/prev*100)}
-        except: pass
-    return pulse
-
-# ── Screener ───────────────────────────────────────────────────────────────
-def run_screener(portfolio, limit=10):
-    exclude=set(t.upper() for t in portfolio)
-    universe=[t for t in UNIVERSE if t not in exclude]
-    print(f"  Screening {len(universe)} tickers…")
-    results=[]
-    for ticker in universe:
-        print(f"    {ticker}",end=" ",flush=True)
-        s=get_stock(ticker)
-        if not s: print("✗"); continue
-        v=skill_verdict(s); s["verdict_data"]=v
-        if v["verdict"] in ("BUY","WATCH"): results.append(s); print(f"✓ {v['verdict']}")
-        else: print(f"· {v['verdict']}")
-    results.sort(key=lambda x:({"BUY":0,"WATCH":1}.get(x["verdict_data"]["verdict"],9),
-                                -x["verdict_data"]["score"]))
-    return results[:limit]
-
-# ── Earnings calendar ──────────────────────────────────────────────────────
-def get_earnings_calendar(tickers):
-    upcoming=[]; today=date.today(); cutoff=today+timedelta(days=45)
-    for ticker in tickers:
-        try:
-            t=yf.Ticker(ticker); cal=t.calendar
-            if not isinstance(cal,dict): continue
-            dates=cal.get("Earnings Date",[])
-            for d in (dates if hasattr(dates,"__iter__") else [dates]):
-                dt=pd.Timestamp(d).date()
-                if today<=dt<=cutoff: upcoming.append({"ticker":ticker,"date":dt})
-        except: pass
-    upcoming.sort(key=lambda x:x["date"])
-    # dedupe
-    seen=set(); out=[]
-    for e in upcoming:
-        k=(e["ticker"],e["date"])
-        if k not in seen: seen.add(k); out.append(e)
-    return out
-
-# ── Charts ─────────────────────────────────────────────────────────────────
-def fig_to_b64(fig):
-    buf=io.BytesIO(); fig.savefig(buf,format="png",dpi=130,bbox_inches="tight",
-                                  facecolor=fig.get_facecolor()); plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode()
-
-BG="#0d1117"; SURFACE="#161b22"; BORDER="#30363d"
-BLUE="#1f6feb"; BLUE_LT="#58a6ff"; GREEN="#3fb950"; AMBER="#f0883e"
-RED="#ff7b72"; TEXT="#c9d1d9"; MUTED="#8b949e"
-
-def chart_range(stocks):
-    items=[(s["ticker"],s["lo52"],s["hi52"],s["price"])
-           for s in stocks if s.get("lo52") and s.get("hi52")]
-    if not items: return ""
-    n=len(items); fig,ax=plt.subplots(figsize=(9,max(3,n*0.58)))
-    fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
-    for i,(ticker,lo,hi,curr) in enumerate(items):
-        span=hi-lo
-        ax.barh(i,span,left=lo,height=0.45,color=SURFACE,zorder=2)
-        ax.barh(i,curr-lo,left=lo,height=0.45,color=BLUE,alpha=0.75,zorder=3)
-        ax.plot(curr,i,"|",color=BLUE_LT,markersize=16,markeredgewidth=2.5,zorder=5)
-        ax.text(lo-(span*.01),i,f"${lo:,.0f}",ha="right",va="center",
-                fontsize=7.5,color=MUTED)
-        ax.text(hi+(span*.01),i,f"${hi:,.0f}",ha="left",va="center",
-                fontsize=7.5,color=MUTED)
-        ax.text(curr,i+0.30,f"${curr:,.2f}",ha="center",va="bottom",
-                fontsize=8,color=BLUE_LT,fontweight="bold")
-    ax.set_yticks(range(n))
-    ax.set_yticklabels([t for t,*_ in items],color=TEXT,fontsize=11,fontweight="bold")
-    ax.tick_params(axis="x",colors=MUTED,labelsize=8)
-    ax.spines[:].set_visible(False)
-    ax.set_title("52-week range  ·  ▎ = current price",color=MUTED,fontsize=10,pad=8)
-    ax.invert_yaxis(); fig.tight_layout(pad=1.2)
-    return fig_to_b64(fig)
-
-def chart_watchlist(watchlist_cfg, prices):
-    items=[(ticker,prices.get(ticker),cfg.get("buy_at"),cfg.get("direction","below"))
-           for ticker,cfg in watchlist_cfg.items() if prices.get(ticker)]
-    if not items: return ""
-    n=len(items); fig,ax=plt.subplots(figsize=(8,max(2.5,n*0.65)))
-    fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
-    for i,(ticker,price,target,direction) in enumerate(items):
-        if direction=="below":
-            pct_away=(price-target)/target*100
-            progress=max(0,min(1,target/price))
-            color=GREEN if pct_away<=5 else (AMBER if pct_away<=15 else SURFACE)
-            label=f"{pct_away:+.1f}% above target ${target:,.0f}"
-        else:
-            pct_away=(target-price)/price*100; progress=max(0,min(1,price/target))
-            color=AMBER; label=f"{pct_away:.1f}% to go  target ${target:,.0f}"
-        ax.barh(i,1.0,height=0.5,color=SURFACE,zorder=2)
-        ax.barh(i,progress,height=0.5,color=color,alpha=0.8,zorder=3)
-        ax.text(0.012,i,ticker,ha="left",va="center",fontsize=11,
-                fontweight="bold",color=TEXT,zorder=4)
-        ax.text(0.988,i,f"${price:,.2f}  ·  {label}",ha="right",va="center",
-                fontsize=8.5,color=MUTED,zorder=4)
-    ax.set_yticks([]); ax.set_xticks([]); ax.spines[:].set_visible(False)
-    ax.set_xlim(0,1)
-    ax.set_title("Watch list — proximity to entry target",color=MUTED,fontsize=10,pad=8)
-    ax.invert_yaxis(); fig.tight_layout(pad=1.2)
-    return fig_to_b64(fig)
-
-def chart_alloc(portfolio_data):
-    palette=[BLUE,GREEN,AMBER,RED,"#a371f7",BLUE_LT,"#56d364","#ffa657",
-             "#d2a8ff","#79c0ff","#f85149"]
-    labels=[]; values=[]; colors=[]
-    for i,s in enumerate(portfolio_data):
-        if s.get("price"):
-            labels.append(s["ticker"]); values.append(s["price"])
-            colors.append(palette[i%len(palette)])
-    if not values: return ""
-    fig,ax=plt.subplots(figsize=(5,5)); fig.patch.set_facecolor(BG)
-    wedges,texts,autos=ax.pie(values,labels=labels,colors=colors,autopct="%1.0f%%",
-                               pctdistance=0.82,startangle=140,
-                               wedgeprops={"linewidth":2,"edgecolor":BG})
-    for t in texts: t.set_color(TEXT); t.set_fontsize(9)
-    for a in autos: a.set_color(BG); a.set_fontsize(8); a.set_fontweight("bold")
-    ax.add_patch(plt.Circle((0,0),.55,color=BG))
-    ax.text(0,0,"Portfolio\nallocation",ha="center",va="center",
-            fontsize=9,color=MUTED,linespacing=1.5)
-    ax.set_title("Holdings by price weight",color=MUTED,fontsize=10,pad=12)
-    fig.tight_layout(); return fig_to_b64(fig)
-
-# ── HTML builder ───────────────────────────────────────────────────────────
-def badge(label,bg,fg):
-    return (f'<span style="background:{bg};color:{fg};padding:2px 10px;'
-            f'border-radius:20px;font-size:11px;font-weight:700">{label}</span>')
-
-VERDICT_BADGE={
-    "BUY":  lambda: badge("🟢 BUY","#1a4731",GREEN),
-    "WATCH":lambda: badge("🟡 WATCH","#3d2800",AMBER),
-    "WAIT": lambda: badge("⏳ WAIT","#21262d",MUTED),
-    "PASS": lambda: badge("🔴 PASS","#4a1b1b",RED),
-}
-
-def img_tag(b64):
-    return (f'<img src="data:image/png;base64,{b64}" '
-            f'style="width:100%;border-radius:8px;margin-bottom:20px">'
-            if b64 else "")
-
-def build_html(pulse,port_data,watchlist_cfg,watch_prices,screener,earnings,
-               b64_range,b64_watch,b64_alloc):
-
-    # Market pulse strip
-    pulse_cells=""
-    for name,d in pulse.items():
-        is_fear="VIX" in name or "Yield" in name
-        good=(d["pct"]<0) if is_fear else (d["pct"]>0)
-        color=GREEN if good else RED
-        sign="+" if d["pct"]>0 else ""
-        pulse_cells+=f"""
-        <div style="text-align:center;padding:12px 20px;
-                    border-right:1px solid #21262d">
-          <div style="font-size:10px;color:{MUTED};text-transform:uppercase;
-                      letter-spacing:.07em;margin-bottom:4px">{name}</div>
-          <div style="font-size:20px;font-weight:700;color:{TEXT}">{d['value']:,.2f}</div>
-          <div style="font-size:13px;color:{color};font-weight:600">
-            {sign}{d['pct']:.2f}%</div>
-        </div>"""
-
-    # Portfolio table rows
-    port_rows=""
-    for s in port_data:
-        tc=GREEN if s["pct_today"]>=0 else RED
-        ts=fmt_pct(s["pct_today"])
-        uc=GREEN if (s.get("upside") or 0)>=15 else (AMBER if (s.get("upside") or 0)>0 else RED)
-        rsi_c=(RED if (s.get("rsi") or 0)>75 else
-               GREEN if (s.get("rsi") or 0)<35 else TEXT)
-        earn_s=""
-        if s.get("earnings_dt"):
-            days=(s["earnings_dt"]-date.today()).days
-            if 0<=days<=45:
-                earn_s=(f'<span style="background:#0c2d6b;color:{BLUE_LT};'
-                        f'padding:1px 7px;border-radius:10px;font-size:10px">'
-                        f'Earns {s["earnings_dt"].strftime("%b %d")} ({days}d)</span>')
-        port_rows+=f"""<tr>
-          <td style="font-weight:700;color:{TEXT}">{s['ticker']}</td>
-          <td style="color:{MUTED};font-size:12px">{s['name'][:26]}</td>
-          <td style="font-weight:700">{fmt_price(s['price'])}</td>
-          <td style="color:{tc};font-weight:600">{ts}</td>
-          <td>{fmt_price(s.get('tgt_mean'))}</td>
-          <td style="color:{uc};font-weight:600">{fmt_pct(s.get('upside')) if s.get('upside') else '—'}</td>
-          <td style="color:{MUTED};font-size:12px">{s.get('buy_pct','—')}{'% buy' if s.get('buy_pct') else ''}</td>
-          <td>{fmt_pct(s.get('rev_growth')) if s.get('rev_growth') else '—'}</td>
-          <td style="color:{rsi_c}">{s.get('rsi','—')}</td>
-          <td style="font-size:12px">{earn_s}</td>
-        </tr>"""
-
-    # Watch list cards
-    watch_html=""
-    for ticker,cfg in watchlist_cfg.items():
-        price=watch_prices.get(ticker); target=cfg.get("buy_at")
-        if not price: continue
-        direction=cfg.get("direction","below")
-        if direction=="below":
-            pct_away=(price-target)/target*100; verb="above target"
-        else:
-            pct_away=(target-price)/price*100; verb="to target"
-        close=pct_away<=5
-        pct_color=GREEN if close else MUTED
-        alert=(f'<div style="color:{GREEN};font-size:12px;font-weight:700;margin-top:6px">'
-               f'🔔 APPROACHING — consider acting now</div>' if close else "")
-        watch_html+=f"""
-        <div style="background:{SURFACE};border:1px solid {BORDER};
-                    border-radius:8px;padding:14px 16px;margin-bottom:10px">
-          <div style="display:flex;justify-content:space-between;align-items:baseline">
-            <span style="font-size:17px;font-weight:700;color:{TEXT}">{ticker}</span>
-            <span style="color:{pct_color};font-size:13px;font-weight:600">
-              {pct_away:.1f}% {verb}</span>
-          </div>
-          <div style="margin-top:5px;font-size:13px;color:{MUTED}">
-            Current <strong style="color:{TEXT}">{fmt_price(price)}</strong>
-            &nbsp;·&nbsp; Target <strong style="color:{BLUE_LT}">{fmt_price(target)}</strong>
-          </div>
-          <div style="margin-top:5px;font-size:12px;color:#6e7681">{cfg.get('note','')}</div>
-          {alert}
-        </div>"""
-
-    # Screener cards
-    screener_html=""
-    for s in screener:
-        vd=s.get("verdict_data",{}); v=vd.get("verdict","")
-        vbadge=(VERDICT_BADGE.get(v,lambda: badge(v,"#21262d",MUTED)))()
-        passes_li="".join(f'<li style="color:{GREEN}">✓ {p}</li>'
-                          for p in vd.get("passes",[]))
-        fails_li="".join(f'<li style="color:{AMBER}">· {f}</li>'
-                         for f in vd.get("fails",[]))
-        kills_li="".join(f'<li style="color:{RED}">✗ {k}</li>'
-                         for k in vd.get("kills",[]))
-        news_html="".join(
-            f'<div style="font-size:11px;color:#6e7681;margin-top:3px">'
-            f'» <a href="{n["url"]}" style="color:{BLUE_LT};text-decoration:none">'
-            f'{n["title"][:90]}…</a></div>'
-            for n in s.get("news",[])[:2])
-        tc=GREEN if s["pct_today"]>=0 else RED
-        screener_html+=f"""
-        <div style="background:{SURFACE};border:1px solid {BORDER};
-                    border-radius:8px;padding:16px;margin-bottom:12px">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div>
-              <span style="font-size:19px;font-weight:700;color:{TEXT}">{s['ticker']}</span>
-              <span style="font-size:13px;color:{MUTED};margin-left:8px">{s['name']}</span>
-            </div>
-            {vbadge}
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);
-                      gap:8px;margin:12px 0;font-size:12px">
-            <div style="background:{BG};padding:8px;border-radius:6px">
-              <div style="color:{MUTED}">Price</div>
-              <div style="color:{TEXT};font-weight:700">{fmt_price(s['price'])}</div>
-              <div style="color:{tc}">{fmt_pct(s['pct_today'])} today</div>
-            </div>
-            <div style="background:{BG};padding:8px;border-radius:6px">
-              <div style="color:{MUTED}">PT upside</div>
-              <div style="color:{GREEN};font-weight:700">{fmt_pct(s.get('upside')) if s.get('upside') else '—'}</div>
-              <div style="color:#6e7681">{s.get('n_analysts',0)} analysts</div>
-            </div>
-            <div style="background:{BG};padding:8px;border-radius:6px">
-              <div style="color:{MUTED}">Rev growth</div>
-              <div style="color:{GREEN};font-weight:700">{fmt_pct(s.get('rev_growth')) if s.get('rev_growth') else '—'}</div>
-              <div style="color:#6e7681">YoY trailing</div>
-            </div>
-            <div style="background:{BG};padding:8px;border-radius:6px">
-              <div style="color:{MUTED}">Below high</div>
-              <div style="color:{TEXT};font-weight:700">{fmt_pct(s.get('from_hi')) if s.get('from_hi') else '—'}</div>
-              <div style="color:#6e7681">{s.get('buy_pct','—')}{'% buy' if s.get('buy_pct') else ''}</div>
-            </div>
-          </div>
-          <ul style="margin:0 0 8px;padding-left:16px;font-size:12px;line-height:1.9">
-            {passes_li}{fails_li}{kills_li}
-          </ul>
-          {news_html}
-        </div>"""
-
-    if not screener_html:
-        screener_html=(f'<div style="color:{MUTED};padding:16px">'
-                       'No new candidates pass this week.</div>')
-
-    # Earnings rows
-    earn_rows=""
-    for e in earnings[:20]:
-        days=(e["date"]-date.today()).days
-        uc=RED if days<=7 else (AMBER if days<=14 else MUTED)
-        earn_rows+=f"""<tr>
-          <td style="font-weight:700;color:{TEXT}">{e['ticker']}</td>
-          <td>{e['date'].strftime('%b %d, %Y')}</td>
-          <td style="color:{uc};font-weight:{'700' if days<=7 else '400'}">{days}d</td>
-        </tr>"""
-    if not earn_rows:
-        earn_rows=f'<tr><td colspan="3" style="color:{MUTED}">No earnings in next 45 days</td></tr>'
-
-    css=f"""
-    *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
-    body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-         background:{BG};color:{TEXT};line-height:1.5;font-size:14px}}
-    .wrap{{max-width:880px;margin:0 auto;padding:0 16px 48px}}
-    .sec{{margin-bottom:32px}}
-    .sec-title{{font-size:11px;font-weight:600;letter-spacing:.1em;
-               text-transform:uppercase;color:{MUTED};
-               border-bottom:1px solid #21262d;padding-bottom:8px;margin-bottom:16px}}
-    table{{width:100%;border-collapse:collapse;font-size:13px}}
-    th{{color:{MUTED};font-weight:600;font-size:11px;text-transform:uppercase;
-       letter-spacing:.05em;padding:7px 8px;border-bottom:1px solid #21262d;text-align:left}}
-    td{{padding:8px 8px;border-bottom:1px solid {SURFACE};vertical-align:middle}}
-    tr:last-child td{{border-bottom:none}}
+def check_watchlist_triggers(
+    watchlist: dict,
+    prices: dict,   # {ticker: current_price}
+    webhook: str,
+    state: dict,
+) -> list[str]:
     """
+    Check each watchlist entry against current price.
+    Returns list of triggered ticker strings.
+    Fires discord alerts for hits.
+    """
+    triggered = []
+    for ticker, cfg in watchlist.items():
+        price = prices.get(ticker)
+        if price is None:
+            continue
+        buy_at = cfg.get("buy_at")
+        direction = cfg.get("direction", "below")
+        if buy_at is None:
+            continue
+        hit = False
+        if direction == "below" and price <= buy_at:
+            hit = True
+        elif direction == "above" and price >= buy_at:
+            hit = True
+        if hit:
+            triggered.append(ticker)
+            if webhook and _MODULES_AVAILABLE:
+                try:
+                    alert_watch_trigger(
+                        ticker, price, buy_at,
+                        cfg.get("note", ""),
+                        webhook, state
+                    )
+                except Exception:
+                    pass
+    return triggered
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Market Brief — {DATE}</title>
-<style>{css}</style>
-</head>
-<body><div class="wrap">
 
-<div style="background:#0c2d6b;border-radius:10px;
-            padding:28px 28px 22px;margin:24px 0 28px">
-  <div style="font-size:10px;font-weight:700;letter-spacing:.18em;
-              text-transform:uppercase;color:rgba(255,255,255,.5);margin-bottom:6px">
-    Weekly Market Brief</div>
-  <div style="font-size:26px;font-weight:700;color:#fff">{DATE}</div>
-  <div style="font-size:12px;color:rgba(255,255,255,.55);margin-top:4px">
-    yfinance · no AI APIs · generated {NOW.strftime('%H:%M ET')}</div>
-</div>
+def check_big_moves(
+    held: list[str],
+    ticker_data: dict,    # {ticker: {pct_today: float}}
+    threshold: float,
+    webhook: str,
+    state: dict,
+) -> list[str]:
+    """Check held tickers for ±threshold% moves. Fire discord alerts. Return triggered list."""
+    triggered = []
+    for ticker in held:
+        data = ticker_data.get(ticker, {})
+        pct = data.get("pct_today", 0.0)
+        if abs(pct) >= threshold:
+            triggered.append(ticker)
+            if webhook and _MODULES_AVAILABLE:
+                try:
+                    alert_big_move(ticker, pct, webhook, state)
+                except Exception:
+                    pass
+    return triggered
 
-<div class="sec">
-  <div class="sec-title">Market pulse</div>
-  <div style="display:flex;background:{SURFACE};border:1px solid {BORDER};
-              border-radius:8px;overflow:hidden">{pulse_cells}</div>
-</div>
 
-<div class="sec">
-  <div class="sec-title">Portfolio — 52-week range</div>
-  {img_tag(b64_range)}
-</div>
+def write_gha_summary(
+    state_score: dict,
+    screen_results: dict,
+    watchlist_triggers: list,
+    big_moves: list,
+    mode: str,
+) -> None:
+    """Write markdown to $GITHUB_STEP_SUMMARY env var path if set."""
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+    if not summary_path:
+        return
 
-<div class="sec">
-  <div class="sec-title">Portfolio snapshot</div>
-  <div style="background:{SURFACE};border:1px solid {BORDER};
-              border-radius:8px;overflow:hidden">
-  <table>
-    <thead><tr>
-      <th>Ticker</th><th>Name</th><th>Price</th><th>Today</th>
-      <th>PT</th><th>Upside</th><th>Consensus</th>
-      <th>Rev growth</th><th>RSI</th><th></th>
-    </tr></thead>
-    <tbody>{port_rows}</tbody>
-  </table></div>
-</div>
+    lines = []
+    lines.append(f"# Market Scanner — {mode} ({date.today()})\n")
 
-<div class="sec">
-  <div class="sec-title">Watch list — entry targets</div>
-  {img_tag(b64_watch)}
-  {watch_html}
-</div>
+    # Market state summary
+    regime = state_score.get("regime", "N/A")
+    score = state_score.get("score", "N/A")
+    summary_text = state_score.get("summary", "")
+    lines.append(f"## Market State\n")
+    lines.append(f"**Regime:** {regime} | **Score:** {score}\n")
+    if summary_text:
+        lines.append(f"{summary_text}\n")
 
-<div class="sec">
-  <div class="sec-title">Screener — new candidates this week</div>
-  <div style="font-size:12px;color:#6e7681;margin-bottom:14px">
-    {len(UNIVERSE)} tickers screened · growth mode criteria:
-    rev &gt;20%, buy ≥80%, 0–1 sells, price 10–40% off 52wk high, PT upside ≥15%
-  </div>
-  {screener_html}
-</div>
+    # Watchlist triggers
+    if watchlist_triggers:
+        lines.append(f"\n## Watchlist Triggers\n")
+        for t in watchlist_triggers:
+            lines.append(f"- **{t}** — price target hit\n")
 
-<div class="sec">
-  <div class="sec-title">Earnings calendar — next 45 days</div>
-  <div style="background:{SURFACE};border:1px solid {BORDER};
-              border-radius:8px;overflow:hidden">
-  <table>
-    <thead><tr><th>Ticker</th><th>Date</th><th>Days away</th></tr></thead>
-    <tbody>{earn_rows}</tbody>
-  </table></div>
-</div>
+    # Big moves
+    if big_moves:
+        lines.append(f"\n## Big Moves (Held)\n")
+        for t in big_moves:
+            lines.append(f"- **{t}**\n")
 
-<div class="sec">
-  <div class="sec-title">Portfolio allocation</div>
-  <div style="max-width:360px;margin:0 auto">{img_tag(b64_alloc)}</div>
-</div>
+    # Screener results
+    if screen_results:
+        lines.append(f"\n## Screener Results\n")
+        for screen_id, candidates in screen_results.items():
+            if candidates:
+                lines.append(f"\n### Screen {screen_id}\n")
+                lines.append("| Ticker | Reason |\n|--------|--------|\n")
+                for cand in candidates[:5]:
+                    ticker = cand.get("ticker", "")
+                    reason = cand.get("reason", "")
+                    lines.append(f"| {ticker} | {reason} |\n")
 
-<div style="border-top:1px solid #21262d;padding-top:16px;
-            font-size:11px;color:#6e7681;text-align:center">
-  Not financial advice · data via yfinance / Yahoo Finance ·
-  {NOW.strftime('%Y-%m-%d %H:%M')} ET
-</div>
-</div></body></html>"""
+    with open(summary_path, "a") as f:
+        f.writelines(lines)
 
-# ── GitHub Actions summary ─────────────────────────────────────────────────
-def write_gha_summary(pulse, port_data, triggered, screener, earnings):
-    path=os.environ.get("GITHUB_STEP_SUMMARY")
-    if not path: return
-    lines=[f"# 📊 Market Brief — {DATE}\n"]
 
-    lines+=["## Market pulse\n","| Index | Value | Change |","|---|---|---|"]
-    for name,d in pulse.items():
-        s="+" if d["pct"]>0 else ""
-        lines.append(f"| {name} | {d['value']:,.2f} | {s}{d['pct']:.2f}% |")
-    lines.append("")
+def _select_deep_dive_candidates(
+    histories: dict,
+    held: list[str],
+    n: int = 150,
+) -> list[str]:
+    """
+    Pick top N candidates for deep-dive fundamental fetch.
+    Priority: held tickers first, then tickers with recent momentum
+    (price within 20% of 52w high and mcap heuristic from history).
+    """
+    result = list(held)
+    # Add names within 20% of 52-week high (momentum candidates)
+    for ticker, df in histories.items():
+        if ticker in result or len(df) < 50:
+            continue
+        hi52 = df["Close"].rolling(252, min_periods=50).max().iloc[-1]
+        curr = df["Close"].iloc[-1]
+        if hi52 > 0 and (hi52 - curr) / hi52 <= 0.20:
+            result.append(ticker)
+        if len(result) >= n:
+            break
+    return result[:n]
 
-    if triggered:
-        lines+=["## 🔔 Watch price alerts\n"]
-        for t in triggered:
-            lines.append(f"- **{t['ticker']}** — {t['reason']}")
-        lines.append("")
 
-    buys=[s for s in screener if s.get("verdict_data",{}).get("verdict")=="BUY"]
-    if buys:
-        lines+=["## 🟢 New screener buys\n"]
-        for s in buys:
-            lines.append(f"- **{s['ticker']}** — {fmt_price(s['price'])} · "
-                         f"PT upside {fmt_pct(s.get('upside'))} · "
-                         f"Rev {fmt_pct(s.get('rev_growth'))}")
-        lines.append("")
+def _compute_gap_movers(
+    histories: dict,
+    threshold: float = 5.0,
+) -> list[dict]:
+    """Find tickers that gapped > threshold% from prior close."""
+    movers = []
+    for ticker, df in histories.items():
+        if len(df) < 2:
+            continue
+        prev = float(df["Close"].iloc[-2])
+        curr = float(df["Close"].iloc[-1])
+        if prev <= 0:
+            continue
+        pct = (curr - prev) / prev * 100
+        if abs(pct) >= threshold:
+            movers.append({"ticker": ticker, "pct_change": pct, "price": curr})
+    return sorted(movers, key=lambda x: abs(x["pct_change"]), reverse=True)
 
-    lines+=["## Portfolio snapshot\n",
-            "| Ticker | Price | Today | PT upside | Rev growth |",
-            "|---|---|---|---|---|"]
-    for s in port_data:
-        lines.append(f"| {s['ticker']} | {fmt_price(s['price'])} | "
-                     f"{fmt_pct(s['pct_today'])} | "
-                     f"{fmt_pct(s.get('upside')) if s.get('upside') else '—'} | "
-                     f"{fmt_pct(s.get('rev_growth')) if s.get('rev_growth') else '—'} |")
-    lines.append("")
 
-    if earnings:
-        lines+=["## Upcoming earnings\n"]
-        for e in earnings[:12]:
-            days=(e["date"]-date.today()).days
-            lines.append(f"- **{e['ticker']}** — {e['date'].strftime('%b %d')} ({days}d)")
-        lines.append("")
-
-    lines.append("---\n*Full report saved as `report.html` artifact.*")
-    with open(path,"w") as f: f.write("\n".join(lines))
-
-# ── Discord ────────────────────────────────────────────────────────────────
-def send_discord(webhook, msg):
-    if not webhook: return
-    try: requests.post(webhook,json={"content":msg[:2000]},timeout=10)
-    except Exception as e: print(f"  Discord: {e}")
-
-def discord_alert(triggered, screener):
-    buys=[s for s in screener if s.get("verdict_data",{}).get("verdict")=="BUY"]
-    if not triggered and not buys: return ""
-    lines=[f"**📊 Market Scanner — {NOW.strftime('%b %d')}**\n"]
-    if triggered:
-        lines.append("🔔 **Watch price alerts**")
-        for t in triggered: lines.append(f"  • **{t['ticker']}** {t['reason']}")
-    if buys:
-        lines.append("\n🟢 **New screener finds**")
-        for s in buys:
-            lines.append(f"  • **{s['ticker']}** {fmt_price(s['price'])} · "
-                         f"PT upside {fmt_pct(s.get('upside'))}")
-    lines.append("\n_Full report in Actions → Artifacts_")
-    return "\n".join(lines)
-
-# ── Main ───────────────────────────────────────────────────────────────────
 def main():
-    cfg=load_config()
-    print(f"[scanner] {DATE}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["daily-pre", "daily-post", "weekly"],
+                        default=None)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Skip Discord, skip Pages deploy, print report path only")
+    args = parser.parse_args()
 
-    port_tickers=cfg.get("portfolio",[])
-    watchlist_cfg=cfg.get("watchlist",{})
-    move_pct=cfg.get("alert_move_pct",5.0)
-    do_screener=(datetime.today().weekday()==cfg.get("weekly_scan_weekday",0) or
-                 cfg.get("run_screener_daily",False))
-    webhook=os.environ.get("DISCORD_WEBHOOK",cfg.get("discord_webhook",""))
+    # Determine mode from arg or env (SCANNER_MODE env var) or day of week
+    mode = args.mode or os.environ.get("SCANNER_MODE", "")
+    if not mode:
+        dow = date.today().weekday()  # 0=Monday
+        mode = "weekly" if dow == 0 else "daily-post"
 
-    print("Fetching market pulse…")
-    pulse=get_market_pulse()
+    cfg = load_config()
+    webhook = cfg["discord_webhook"] if not args.dry_run else ""
 
-    print("Fetching portfolio…")
-    port_data=[]
-    for t in port_tickers:
-        print(f"  {t}",end=" ",flush=True)
-        s=get_stock(t)
-        if s: port_data.append(s); print("✓")
-        else: print("✗")
+    print(f"[scanner] mode={mode} date={date.today()}", flush=True)
 
-    print("Checking watchlist…")
-    watch_prices={}
-    for t in watchlist_cfg:
-        s=get_stock(t)
-        if s: watch_prices[t]=s["price"]; print(f"  {t}: ${s['price']}")
+    if not _MODULES_AVAILABLE:
+        print(f"[scanner] WARNING: sub-modules not available ({_IMPORT_ERR}). "
+              f"Running in legacy fallback mode.", flush=True)
+        _run_legacy(cfg, mode, args.dry_run, webhook)
+        return
 
-    triggered=[]
-    for ticker,cfg_item in watchlist_cfg.items():
-        price=watch_prices.get(ticker); target=cfg_item.get("buy_at")
-        if price and target:
-            direction=cfg_item.get("direction","below")
-            if ((direction=="below" and price<=target) or
-                (direction=="above" and price>=target)):
-                triggered.append({"ticker":ticker,"price":price,"target":target,
-                                   "reason":f"${price} hit target ${target}"})
+    state = load_state()
+    cache = RunCache()
 
-    screener=[]
-    if do_screener:
-        print("\nRunning screener…")
-        screener=run_screener(port_tickers)
+    # ── Universe data ──────────────────────────────────────────────────────────
+    tickers = get_universe_tickers()
+    print(f"[scanner] universe: {len(tickers)} tickers", flush=True)
 
-    print("\nBuilding earnings calendar…")
-    all_earn_tickers=list(set(port_tickers+list(watchlist_cfg.keys())))
-    earnings=get_earnings_calendar(all_earn_tickers)
-    print(f"  {len(earnings)} events in 45 days")
+    # Bulk download — all tickers, 1 year history
+    print("[scanner] fetching universe history...", flush=True)
+    universe_histories = bulk_history(tickers, period="1y")
+    print(f"[scanner] got history for {len(universe_histories)} tickers", flush=True)
 
-    print("Generating charts…")
-    b64_range=chart_range(port_data)
-    b64_watch=chart_watchlist(watchlist_cfg,watch_prices)
-    b64_alloc=chart_alloc(port_data)
+    # Index / cross-asset data
+    index_syms = ["^GSPC", "^IXIC", "^VIX", "^VIX3M", "^VIX9D", "^VVIX",
+                  "^TNX", "GC=F", "HG=F", "SPY", "RSP", "SPHB", "SPLV"]
+    index_data = get_index_data(index_syms)
 
-    print("Building HTML report…")
-    html=build_html(pulse,port_data,watchlist_cfg,watch_prices,
-                    screener,earnings,b64_range,b64_watch,b64_alloc)
+    # Macro data (FRED + AAII)
+    fred_data = latest_fred()
+    aaii_data = latest_aaii()
 
-    out=Path("report.html"); out.write_text(html,encoding="utf-8")
-    print(f"  → {out} ({len(html)//1024}KB)")
+    # ── Market state ───────────────────────────────────────────────────────────
+    print("[scanner] computing market state...", flush=True)
+    state_score = compute_market_state(universe_histories, index_data, fred_data, aaii_data)
+    print(f"[scanner] state score: {state_score.get('score', 'N/A')} ({state_score.get('regime', '')})", flush=True)
 
-    write_gha_summary(pulse,port_data,triggered,screener,earnings)
+    # Regime shift alert
+    prev_score = state.get("last_state_score")
+    if prev_score is not None and abs(state_score.get("score", 50) - prev_score) >= 15:
+        alert_regime_shift(
+            state_score.get("summary", ""),
+            prev_score, state_score.get("score", 50),
+            webhook, state
+        )
+    state["last_state_score"] = state_score.get("score")
 
-    msg=discord_alert(triggered,screener)
-    if msg: print("\nSending Discord alert…"); send_discord(webhook,msg)
-    else: print("\nNo urgent signals — Discord silent")
+    # ── Watchlist & big moves ──────────────────────────────────────────────────
+    # Get current prices for watchlist tickers
+    watch_tickers = list(cfg["watchlist"].keys())
+    watch_prices = {}
+    for t in watch_tickers:
+        h = universe_histories.get(t)
+        if h is not None and not h.empty:
+            watch_prices[t] = float(h["Close"].iloc[-1])
 
-    print("\n[done]")
+    watchlist_triggers = check_watchlist_triggers(
+        cfg["watchlist"], watch_prices, webhook, state)
 
-if __name__=="__main__":
+    # Check held tickers for big moves (using pct_today from universe histories)
+    held_data = {}
+    for t in cfg["held"]:
+        h = universe_histories.get(t)
+        if h is not None and len(h) >= 2:
+            prev = float(h["Close"].iloc[-2])
+            curr = float(h["Close"].iloc[-1])
+            held_data[t] = {"pct_today": (curr - prev) / prev * 100 if prev else 0}
+
+    big_moves = check_big_moves(
+        cfg["held"], held_data, cfg["alert_move_pct"], webhook, state)
+
+    # ── Screens (always) ──────────────────────────────────────────────────────
+    print("[scanner] running candidate screens...", flush=True)
+    # Deep-dive fundamentals for top candidates by momentum
+    # To avoid 1000+ ticker.info calls, pre-filter: names near highs or with recent history
+    deep_dive_tickers = _select_deep_dive_candidates(universe_histories, cfg["held"], n=150)
+    ticker_infos = {}
+    for i, t in enumerate(deep_dive_tickers):
+        if i % 25 == 0:
+            print(f"[scanner] deep dive {i}/{len(deep_dive_tickers)}...", flush=True)
+        info = get_ticker_info(t)
+        if info:
+            ticker_infos[t] = info
+
+    screen_results = run_all_screens(
+        universe_histories, ticker_infos, set(cfg["held"]))
+
+    # Discord alerts for new top candidates (Screen 1, 2, 3, 4 only for alerts)
+    for screen_id in [1, 2, 3, 4]:
+        for cand in screen_results.get(screen_id, [])[:3]:
+            alert_screener_candidate(
+                cand["ticker"],
+                SCREEN_META[screen_id]["name"],
+                cand.get("reason", ""),
+                webhook, state
+            )
+
+    # ── Weekly-only: themes + clustering ─────────────────────────────────────
+    ranked_themes, emerging_clusters, sector_rotation = [], [], []
+    if mode == "weekly":
+        print("[scanner] analyzing themes...", flush=True)
+        theme_analysis = analyze_themes(universe_histories)
+        ranked_themes = theme_analysis.get("ranked_themes", [])
+        emerging_clusters = theme_analysis.get("emerging_clusters", [])
+        sector_rotation = theme_analysis.get("sector_rotation", [])
+        stovall_phase = theme_analysis.get("stovall_phase", "")
+
+        for cluster in emerging_clusters:
+            alert_emerging_cluster(
+                cluster.get("members", []),
+                cluster.get("label", ""),
+                webhook, state
+            )
+    else:
+        # Daily still gets sector rotation for the short report
+        from analytics.themes import compute_sector_rotation
+        spy_hist = universe_histories.get("SPY", pd.DataFrame())
+        if not spy_hist.empty:
+            sector_rotation = compute_sector_rotation(universe_histories, spy_hist)
+
+    # ── Breadth summary ────────────────────────────────────────────────────────
+    breadth = state_score.get("breadth", {})
+    new_highs_lows = {
+        "new_highs_52w": breadth.get("new_highs_52w", 0),
+        "new_lows_52w": breadth.get("new_lows_52w", 0),
+    }
+
+    # ── Gap movers (for daily report) ─────────────────────────────────────────
+    gap_movers = _compute_gap_movers(universe_histories, threshold=5.0)
+
+    # ── Build HTML report ─────────────────────────────────────────────────────
+    print("[scanner] building report...", flush=True)
+    if mode == "weekly":
+        html = build_weekly_report(
+            state_score=state_score,
+            sector_rotation=sector_rotation,
+            ranked_themes=ranked_themes,
+            emerging_clusters=emerging_clusters,
+            screen_results=screen_results,
+            screen_meta=SCREEN_META,
+            held_tickers=set(cfg["held"]),
+            watchlist=cfg["watchlist"],
+            pre_ipo=cfg["pre_ipo"],
+            new_highs_lows=new_highs_lows,
+        )
+    else:
+        html = build_daily_report(
+            state_score=state_score,
+            sector_rotation=sector_rotation,
+            new_highs_lows=new_highs_lows,
+            gap_movers=gap_movers[:10],
+            new_candidates=[c for cs in screen_results.values() for c in cs[:2]],
+            earnings_reactions=[],
+        )
+
+    # Write legacy report.html at root (for GHA artifact)
+    Path("report.html").write_text(html)
+    print("[scanner] wrote report.html", flush=True)
+
+    # Stage for Pages
+    if not args.dry_run:
+        report_type = "weekly" if mode == "weekly" else "daily"
+        staged = stage_report(html, report_type)
+        update_index(report_type)
+        print(f"[scanner] staged to {staged}", flush=True)
+
+    # GHA summary
+    write_gha_summary(state_score, screen_results, watchlist_triggers, big_moves, mode)
+
+    # Save state
+    save_state(state)
+    print("[scanner] done.", flush=True)
+
+
+def _run_legacy(cfg: dict, mode: str, dry_run: bool, webhook: str) -> None:
+    """
+    Minimal fallback runner used when sub-modules are not yet present.
+    Fetches pulse + portfolio data via yfinance directly, writes a basic report.html.
+    """
+    try:
+        import yfinance as yf
+        import warnings
+        warnings.filterwarnings("ignore")
+    except ImportError:
+        print("[scanner] yfinance not installed — cannot run legacy mode.", flush=True)
+        return
+
+    state: dict = {}
+    state_path = Path("state.json")
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text())
+        except Exception:
+            state = {}
+
+    # Fetch market pulse
+    pulse_syms = {"S&P 500": "^GSPC", "Nasdaq": "^IXIC", "VIX": "^VIX", "10Y Yield": "^TNX"}
+    pulse = {}
+    for name, sym in pulse_syms.items():
+        try:
+            t = yf.Ticker(sym)
+            hist = t.history(period="5d")
+            if len(hist) >= 2:
+                prev = float(hist["Close"].iloc[-2])
+                curr = float(hist["Close"].iloc[-1])
+                pct = (curr - prev) / prev * 100 if prev else 0
+                pulse[name] = {"value": curr, "pct": pct}
+        except Exception:
+            pulse[name] = {"value": 0, "pct": 0}
+
+    # Fetch held tickers
+    held = cfg.get("held", [])
+    held_rows = []
+    for t in held:
+        try:
+            tk = yf.Ticker(t)
+            hist = tk.history(period="5d")
+            if len(hist) >= 2:
+                prev = float(hist["Close"].iloc[-2])
+                curr = float(hist["Close"].iloc[-1])
+                pct = (curr - prev) / prev * 100 if prev else 0
+                held_rows.append({"ticker": t, "price": curr, "pct_today": pct})
+        except Exception:
+            held_rows.append({"ticker": t, "price": 0, "pct_today": 0})
+
+    # Check watchlist
+    watchlist = cfg.get("watchlist", {})
+    watch_prices = {}
+    for t in watchlist:
+        try:
+            tk = yf.Ticker(t)
+            hist = tk.history(period="5d")
+            if not hist.empty:
+                watch_prices[t] = float(hist["Close"].iloc[-1])
+        except Exception:
+            pass
+
+    state_score: dict = {"score": 50, "regime": "UNKNOWN", "summary": "Legacy mode — sub-modules not available"}
+    watchlist_triggers = check_watchlist_triggers(watchlist, watch_prices, webhook, state)
+
+    held_data = {r["ticker"]: {"pct_today": r["pct_today"]} for r in held_rows}
+    big_moves = check_big_moves(held, held_data, cfg.get("alert_move_pct", 5.0), webhook, state)
+
+    # Build minimal HTML
+    rows_html = ""
+    for r in held_rows:
+        color = "#4caf50" if r["pct_today"] >= 0 else "#f44336"
+        rows_html += (
+            f"<tr><td>{r['ticker']}</td>"
+            f"<td>${r['price']:.2f}</td>"
+            f"<td style='color:{color}'>{r['pct_today']:+.2f}%</td></tr>\n"
+        )
+
+    pulse_html = ""
+    for name, d in pulse.items():
+        color = "#4caf50" if d["pct"] >= 0 else "#f44336"
+        pulse_html += (
+            f"<div style='display:inline-block;margin:8px 16px;'>"
+            f"<b>{name}</b><br/>{d['value']:.2f} "
+            f"<span style='color:{color}'>{d['pct']:+.2f}%</span></div>\n"
+        )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset='utf-8'><title>Market Scanner — {date.today()}</title>
+<style>body{{background:#0d1117;color:#e6edf3;font-family:monospace;padding:24px}}
+table{{border-collapse:collapse;width:100%}}
+th,td{{border:1px solid #30363d;padding:8px;text-align:left}}
+th{{background:#161b22}}</style></head>
+<body>
+<h1>Market Scanner — {date.today()} ({mode})</h1>
+<p style='color:#f0a500'>Note: running in legacy mode (sub-modules not installed)</p>
+<h2>Market Pulse</h2>
+<div>{pulse_html}</div>
+<h2>Portfolio</h2>
+<table><tr><th>Ticker</th><th>Price</th><th>Today %</th></tr>
+{rows_html}</table>
+</body></html>"""
+
+    Path("report.html").write_text(html)
+    print("[scanner] wrote report.html (legacy mode)", flush=True)
+
+    write_gha_summary(state_score, {}, watchlist_triggers, big_moves, mode)
+
+    state_path.write_text(json.dumps(state, indent=2, default=str))
+    print("[scanner] done (legacy mode).", flush=True)
+
+
+if __name__ == "__main__":
     main()
