@@ -107,8 +107,11 @@ class TestGetFredSeries(unittest.TestCase):
             self.assertIsInstance(series, pd.Series)
             self.assertGreater(len(series), 0)
 
+    @patch("data.fred.requests.get", side_effect=Exception("network down"))
     @patch("data.fred.web.DataReader", side_effect=Exception("network down"))
-    def test_returns_empty_dict_on_failure(self, mock_dr):
+    def test_returns_empty_dict_on_failure(self, mock_dr, mock_req):
+        """When both pandas-datareader AND the direct-CSV fallback fail,
+        the function must return ``{}`` (and not raise)."""
         from data.fred import get_fred_series, FRED_SERIES
 
         result = get_fred_series(FRED_SERIES, lookback_days=400)
@@ -162,8 +165,9 @@ class TestLatestFred(unittest.TestCase):
         for v in result.values():
             self.assertIsInstance(v, float)
 
+    @patch("data.fred.requests.get", side_effect=Exception("fail"))
     @patch("data.fred.web.DataReader", side_effect=Exception("fail"))
-    def test_returns_empty_on_failure(self, mock_dr):
+    def test_returns_empty_on_failure(self, mock_dr, mock_req):
         from data.fred import latest_fred, FRED_SERIES
 
         result = latest_fred(FRED_SERIES)
@@ -413,6 +417,373 @@ class TestLatestAaii(unittest.TestCase):
             result = latest_aaii()
 
         self.assertGreater(result["bull_bear_zscore_5y"], 2.0)
+
+
+# ---------------------------------------------------------------------------
+# AAII HTML fallback tests
+# ---------------------------------------------------------------------------
+
+# A realistic AAII results-page snippet. The live page renders the three
+# headline percentages inline with their labels and a "Week Ending" date.
+_AAII_HTML_FIXTURE = """
+<html>
+  <body>
+    <h2>AAII Investor Sentiment Survey</h2>
+    <p>Week Ending November 6, 2025</p>
+    <div class="results">
+      <span class="label">Bullish</span> <span class="pct">39.32%</span>
+      <span class="label">Bearish</span> <span class="pct">36.61%</span>
+      <span class="label">Neutral</span> <span class="pct">24.07%</span>
+    </div>
+  </body>
+</html>
+"""
+
+# Imperva challenge page — what AAII serves when it blocks us.
+_IMPERVA_HTML = """
+<!DOCTYPE html><html><head>
+<noscript><title>Pardon Our Interruption</title></noscript>
+<script>window.onProtectionInitialized = function(){};</script>
+</head><body></body></html>
+"""
+
+
+def _clear_aaii_warn_cache():
+    """Reset the per-process warning cache so order-dependent tests are stable."""
+    from data import aaii as _aaii
+    _aaii._WARN_CACHE.clear()
+
+
+def _clear_fred_warn_cache():
+    from data import fred as _fred
+    _fred._WARN_CACHE.clear()
+
+
+class TestAaiiHtmlFallback(unittest.TestCase):
+    """When the XLS endpoint returns an Imperva challenge page or
+    otherwise fails to parse, get_aaii_sentiment must scrape the
+    public HTML results page instead."""
+
+    def setUp(self):
+        _clear_aaii_warn_cache()
+
+    def _mock_response(self, text: str, content: bytes | None = None):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.text = text
+        resp.content = content if content is not None else text.encode("utf-8")
+        return resp
+
+    @patch("data.aaii.requests.get")
+    def test_html_fallback_when_xls_is_imperva(self, mock_get):
+        """Imperva on the XLS endpoint should trigger HTML scrape with the
+        correct percentages parsed from the fallback page."""
+        # First call (XLS) returns Imperva HTML; second call (HTML
+        # fallback) returns the real results page.
+        mock_get.side_effect = [
+            self._mock_response(_IMPERVA_HTML),
+            self._mock_response(_AAII_HTML_FIXTURE),
+        ]
+
+        from data.aaii import get_aaii_sentiment
+
+        df = get_aaii_sentiment()
+        self.assertFalse(df.empty)
+        self.assertEqual(len(df), 1)  # HTML fallback only returns one week
+        self.assertAlmostEqual(float(df.iloc[-1]["bullish"]), 39.32, places=2)
+        self.assertAlmostEqual(float(df.iloc[-1]["bearish"]), 36.61, places=2)
+        self.assertAlmostEqual(float(df.iloc[-1]["neutral"]), 24.07, places=2)
+        # spread = bullish - bearish
+        self.assertAlmostEqual(
+            float(df.iloc[-1]["bull_bear_spread"]), 39.32 - 36.61, places=2
+        )
+
+    @patch("data.aaii.requests.get")
+    def test_html_fallback_when_xls_fails_to_parse(self, mock_get):
+        """A non-Imperva, non-parseable XLS body should still trigger the
+        HTML fallback (rather than just returning an empty DF)."""
+        mock_get.side_effect = [
+            self._mock_response("garbage body that is not xls or csv"),
+            self._mock_response(_AAII_HTML_FIXTURE),
+        ]
+
+        from data.aaii import get_aaii_sentiment
+
+        df = get_aaii_sentiment()
+        self.assertFalse(df.empty)
+        self.assertEqual(len(df), 1)
+        self.assertAlmostEqual(float(df.iloc[-1]["bullish"]), 39.32, places=2)
+
+    @patch("data.aaii.requests.get")
+    def test_html_fallback_imperva_also_blocked(self, mock_get):
+        """If the HTML results page is ALSO behind Imperva, return empty
+        DataFrame (do not raise) and log a clean warning."""
+        mock_get.side_effect = [
+            self._mock_response(_IMPERVA_HTML),
+            self._mock_response(_IMPERVA_HTML),
+        ]
+
+        from data.aaii import get_aaii_sentiment
+
+        df = get_aaii_sentiment()
+        self.assertTrue(df.empty)
+        # Columns must still match the public contract.
+        self.assertEqual(
+            list(df.columns),
+            ["date", "bullish", "bearish", "neutral", "bull_bear_spread"],
+        )
+
+    @patch("data.aaii.requests.get")
+    def test_html_fallback_returns_correct_dict_shape_via_latest_aaii(self, mock_get):
+        """latest_aaii() must return the full dict shape — including a
+        ``note`` field and zero z-score — when only the HTML fallback
+        succeeds."""
+        mock_get.side_effect = [
+            self._mock_response(_IMPERVA_HTML),
+            self._mock_response(_AAII_HTML_FIXTURE),
+        ]
+
+        from data.aaii import latest_aaii
+
+        result = latest_aaii()
+        # Same keys as the normal path
+        for key in ("date", "bullish", "bearish", "neutral",
+                    "bull_bear_spread", "bull_bear_zscore_5y"):
+            self.assertIn(key, result)
+        # Z-score must be neutral (0.0) when only the single week is known
+        self.assertEqual(result["bull_bear_zscore_5y"], 0.0)
+        # And we must document the limitation
+        self.assertIn("note", result)
+        self.assertIn("HTML scrape", result["note"])
+
+    @patch("data.aaii.requests.get")
+    def test_warning_dedupe_on_multiple_calls(self, mock_get):
+        """Calling get_aaii_sentiment twice in a row when AAII is fully
+        blocked must NOT spam the same warning twice."""
+        # Four mock responses — two pairs (XLS + HTML fallback), all Imperva.
+        mock_get.side_effect = [
+            self._mock_response(_IMPERVA_HTML),
+            self._mock_response(_IMPERVA_HTML),
+            self._mock_response(_IMPERVA_HTML),
+            self._mock_response(_IMPERVA_HTML),
+        ]
+
+        from data.aaii import get_aaii_sentiment, _WARN_CACHE
+
+        import io as _io
+        import contextlib
+
+        # First run primes the cache.
+        get_aaii_sentiment()
+
+        # Second run: capture stderr — there must be no new lines printed.
+        buf = _io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            get_aaii_sentiment()
+        self.assertEqual(
+            buf.getvalue(), "",
+            f"Expected no duplicate warnings, got: {buf.getvalue()!r}",
+        )
+        # And the cache must contain the messages we recorded the first time.
+        self.assertTrue(len(_WARN_CACHE) >= 1)
+
+
+class TestAaiiHtmlFallbackHelpers(unittest.TestCase):
+    """Direct unit tests for the regex helpers used by the HTML scrape."""
+
+    def test_extract_pct_basic(self):
+        from data.aaii import _extract_pct
+        self.assertAlmostEqual(
+            _extract_pct("Bullish 39.32%", "bullish"), 39.32, places=2
+        )
+
+    def test_extract_pct_with_markup(self):
+        """Regex must work across HTML tags — the live AAII results page
+        renders the label and the percent number in separate <span>s."""
+        from data.aaii import _extract_pct
+        html = '<span>Bearish</span> <strong>36.6%</strong>'
+        result = _extract_pct(html, "bearish")
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, 36.6, places=1)
+
+    def test_extract_pct_label_not_found(self):
+        from data.aaii import _extract_pct
+        self.assertIsNone(_extract_pct("nothing relevant here", "bullish"))
+
+    def test_extract_date_week_of(self):
+        from data.aaii import _extract_date
+        self.assertEqual(
+            _extract_date("Week Ending November 6, 2025"),
+            "2025-11-06",
+        )
+
+    def test_extract_date_iso(self):
+        from data.aaii import _extract_date
+        self.assertEqual(_extract_date("data as of 2025-11-06"), "2025-11-06")
+
+    def test_extract_date_missing(self):
+        from data.aaii import _extract_date
+        self.assertIsNone(_extract_date("no date in here at all"))
+
+    def test_looks_like_imperva(self):
+        from data.aaii import _looks_like_imperva
+        self.assertTrue(_looks_like_imperva(_IMPERVA_HTML))
+        self.assertFalse(_looks_like_imperva(_AAII_HTML_FIXTURE))
+        self.assertFalse(_looks_like_imperva(""))
+
+
+# ---------------------------------------------------------------------------
+# FRED direct-CSV fallback tests
+# ---------------------------------------------------------------------------
+
+# A minimal FRED CSV — real responses have this exact shape.
+_FRED_CSV_FIXTURE = """DATE,BAMLH0A0HYM2
+2025-10-01,3.45
+2025-10-02,3.50
+2025-10-03,.
+2025-10-04,3.48
+"""
+
+
+class TestFetchFredDirect(unittest.TestCase):
+    """_fetch_fred_direct should parse the public fredgraph.csv endpoint
+    without needing pandas-datareader."""
+
+    def setUp(self):
+        _clear_fred_warn_cache()
+
+    def _mock_csv_response(self, text: str):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.text = text
+        return resp
+
+    @patch("data.fred.requests.get")
+    def test_parses_csv_response(self, mock_get):
+        mock_get.return_value = self._mock_csv_response(_FRED_CSV_FIXTURE)
+
+        from data.fred import _fetch_fred_direct
+
+        # Use very large lookback so we keep all rows from 2025-10.
+        series = _fetch_fred_direct("BAMLH0A0HYM2", lookback_days=100000)
+        self.assertIsNotNone(series)
+        self.assertIsInstance(series, pd.Series)
+        # FRED uses '.' for missing — must be dropped.
+        self.assertEqual(len(series), 3)
+        # Sorted ascending
+        self.assertTrue(series.index.is_monotonic_increasing)
+        self.assertAlmostEqual(float(series.iloc[-1]), 3.48, places=2)
+
+    @patch("data.fred.requests.get", side_effect=Exception("network down"))
+    def test_returns_none_on_http_failure(self, mock_get):
+        from data.fred import _fetch_fred_direct
+        self.assertIsNone(_fetch_fred_direct("BAMLH0A0HYM2"))
+
+    @patch("data.fred.requests.get")
+    def test_returns_none_on_empty_body(self, mock_get):
+        mock_get.return_value = self._mock_csv_response("")
+        from data.fred import _fetch_fred_direct
+        self.assertIsNone(_fetch_fred_direct("BAMLH0A0HYM2"))
+
+    @patch("data.fred.requests.get")
+    def test_returns_none_on_unparseable_body(self, mock_get):
+        mock_get.return_value = self._mock_csv_response("totally not csv {[")
+        from data.fred import _fetch_fred_direct
+        # Either None (single column = not enough data) or a parsed series
+        # whose date column fails to coerce. Either way, must not crash.
+        result = _fetch_fred_direct("BAMLH0A0HYM2")
+        self.assertIsNone(result)
+
+
+class TestFredFallbackChain(unittest.TestCase):
+    """get_fred_series must transparently fall back from pandas-datareader
+    to the direct CSV path when DataReader is unavailable or fails."""
+
+    def setUp(self):
+        _clear_fred_warn_cache()
+
+    def _mock_csv_response(self, text: str):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.text = text
+        return resp
+
+    def _mock_csv_for(self, fred_id: str) -> str:
+        return (
+            f"DATE,{fred_id}\n"
+            "2025-10-01,1.0\n"
+            "2025-10-02,2.0\n"
+            "2025-10-03,3.0\n"
+        )
+
+    @patch("data.fred.web.DataReader", side_effect=Exception("deprecate_kwarg fail"))
+    @patch("data.fred.requests.get")
+    def test_falls_back_to_direct_csv_when_datareader_raises(self, mock_req, mock_dr):
+        """When pandas-datareader.DataReader raises, the direct CSV path
+        must be tried for each series."""
+        def _side_effect(url, params=None, headers=None, timeout=None, **kwargs):
+            fred_id = (params or {}).get("id", "")
+            return self._mock_csv_response(self._mock_csv_for(fred_id))
+
+        mock_req.side_effect = _side_effect
+
+        from data.fred import get_fred_series, FRED_SERIES
+
+        result = get_fred_series(FRED_SERIES, lookback_days=100000)
+        # All three series should be populated via the CSV fallback.
+        self.assertEqual(set(result.keys()), set(FRED_SERIES.keys()))
+        for name, series in result.items():
+            self.assertIsInstance(series, pd.Series)
+            self.assertGreater(len(series), 0)
+            self.assertTrue(series.index.is_monotonic_increasing)
+
+    @patch("data.fred.requests.get")
+    def test_falls_back_when_web_is_none(self, mock_req):
+        """When ``web is None`` (e.g. pandas-datareader import failed on
+        CI), the direct CSV fallback must still produce results."""
+        def _side_effect(url, params=None, headers=None, timeout=None, **kwargs):
+            fred_id = (params or {}).get("id", "")
+            return self._mock_csv_response(self._mock_csv_for(fred_id))
+
+        mock_req.side_effect = _side_effect
+
+        # Temporarily set data.fred.web to None to simulate the CI failure mode.
+        from data import fred as _fred_mod
+        original = _fred_mod.web
+        _fred_mod.web = None
+        try:
+            from data.fred import get_fred_series, FRED_SERIES
+            result = get_fred_series(FRED_SERIES, lookback_days=100000)
+        finally:
+            _fred_mod.web = original
+
+        self.assertEqual(set(result.keys()), set(FRED_SERIES.keys()))
+        for series in result.values():
+            self.assertGreater(len(series), 0)
+
+    @patch("data.fred.requests.get")
+    def test_latest_fred_via_direct_csv(self, mock_req):
+        """latest_fred() must return float values when only the direct
+        CSV fallback is available."""
+        def _side_effect(url, params=None, headers=None, timeout=None, **kwargs):
+            fred_id = (params or {}).get("id", "")
+            return self._mock_csv_response(self._mock_csv_for(fred_id))
+
+        mock_req.side_effect = _side_effect
+
+        from data import fred as _fred_mod
+        original = _fred_mod.web
+        _fred_mod.web = None
+        try:
+            from data.fred import latest_fred, FRED_SERIES
+            result = latest_fred(FRED_SERIES)
+        finally:
+            _fred_mod.web = original
+
+        self.assertEqual(set(result.keys()), set(FRED_SERIES.keys()))
+        for v in result.values():
+            self.assertIsInstance(v, float)
+            self.assertEqual(v, 3.0)  # last row of every fixture
 
 
 # ---------------------------------------------------------------------------
